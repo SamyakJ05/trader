@@ -51,10 +51,12 @@ Replace `BrokerConnectModal` with `BrokerConnectWizard` (3 steps, single modal s
 ## Workstream 3 — AI Trading
 
 **Backend foundation**:
-- Dependency: `anthropic` (Python SDK, AsyncAnthropic).
-- Settings: `anthropic_api_key: str | None`, `ai_model: str = "claude-opus-4-8"`. `.env.example` documents both.
-- `app/services/ai/client.py`: lazy client, `is_configured()`. All AI endpoints return 503 with a clear message when unconfigured.
-- `GET /ai/status` → `{configured, model}`.
+- Dependencies: `anthropic` (Python SDK; also covers Bedrock via `AsyncAnthropicBedrock`) and `openai` (covers OpenAI, OpenRouter, and any OpenAI-compatible base URL).
+- **Provider settings (in-app, per user)**: new table `ai_settings` — provider (`anthropic | openai | openrouter | bedrock`), model, base_url (nullable), `credentials_enc` (Fernet-encrypted JSON: `{api_key}` or `{aws_access_key_id, aws_secret_access_key, region}` for Bedrock), updated_at. Secrets never returned by the API — only `configured: true`. Env fallback: `ANTHROPIC_API_KEY` + `AI_MODEL` still work when no row exists.
+- `app/services/ai/llm.py`: thin provider abstraction — `LLMClient` protocol with `chat(system, messages, tools) -> LLMReply {text, tool_calls}` and `generate_json(system, prompt, schema) -> dict`. Two impls: `AnthropicLLM` (anthropic + bedrock; native tool use, `output_config.format` structured output) and `OpenAILLM` (openai + openrouter + custom base_url; function calling, `response_format json_schema`).
+- Endpoints: `GET /ai/settings` (provider/model/configured, no secrets), `PUT /ai/settings` (validates provider, encrypts credentials), `POST /ai/settings/test` (one tiny round-trip, returns ok/error), `GET /ai/status` → `{configured, provider, model}`.
+- Frontend: AI Settings card on `/ai` — provider select, model input with per-provider placeholder (anthropic: `claude-opus-4-8`; openrouter: `anthropic/claude-opus-4.8`; bedrock: `anthropic.claude-opus-4-8`), API-key password field (write-only), base URL field for openrouter/custom (prefilled `https://openrouter.ai/api/v1`), AWS key/secret/region fields for bedrock, Test + Save buttons.
+- All AI endpoints return 503 with a clear message when unconfigured.
 - New route module `app/api/routes/ai.py` registered in the router.
 - New `AuditEventType` members: `AI_PROPOSAL`, `AI_DECISION` (strings only; no migration needed for the enum).
 

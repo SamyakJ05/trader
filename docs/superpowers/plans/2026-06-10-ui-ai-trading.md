@@ -70,28 +70,15 @@ Backend (apps/api):
 - [ ] Brokers page: toasts replace notice strings; `?connected=` triggers success toast suggesting Verify.
 - [ ] Update card test for new markup (same behavioral asserts: actions fire, busy disables). `pnpm --filter web test` green. Commit.
 
-### Task 6: AI backend foundation
+### Task 6: AI backend foundation — multi-provider settings + LLM abstraction
 
-**Files:** Modify `apps/api/pyproject.toml`, `app/core/config.py`, root `.env.example`; Create `app/services/ai/__init__.py`, `app/services/ai/client.py`, `app/api/routes/ai.py`; Modify `app/api/router.py`
+**Files:** Modify `apps/api/pyproject.toml`, `app/core/config.py`, root `.env.example`; Create `app/services/ai/__init__.py`, `app/services/ai/llm.py`, `app/api/routes/ai.py`; Modify `app/api/router.py`
 
-- [ ] Add `"anthropic>=0.40"` to dependencies.
-- [ ] Settings: `anthropic_api_key: str | None = None`, `ai_model: str = "claude-opus-4-8"`. `.env.example`: `ANTHROPIC_API_KEY=`, `AI_MODEL=claude-opus-4-8` under a `── AI ──` section.
-- [ ] `client.py`:
-
-```python
-from functools import lru_cache
-from anthropic import AsyncAnthropic
-from app.core.config import get_settings
-
-def is_configured() -> bool:
-    return bool(get_settings().anthropic_api_key)
-
-@lru_cache
-def get_client() -> AsyncAnthropic:
-    return AsyncAnthropic(api_key=get_settings().anthropic_api_key)
-```
-
-- [ ] `routes/ai.py`: `router = APIRouter(prefix="/ai", tags=["ai"])`, `GET /status` → `{"configured": is_configured(), "model": settings.ai_model}`; helper `def require_ai()` raising `HTTPException(503, "AI not configured — set ANTHROPIC_API_KEY in the backend env")`. Register in `router.py`.
+- [ ] Add `"anthropic>=0.40"` and `"openai>=1.50"` to dependencies.
+- [ ] Settings: `anthropic_api_key: str | None = None`, `ai_model: str = "claude-opus-4-8"` (env fallback when no ai_settings row). `.env.example`: `ANTHROPIC_API_KEY=`, `AI_MODEL=claude-opus-4-8` under a `── AI ──` section, noting the in-app settings override.
+- [ ] `ai_settings` table (in Task 7 migration): user_id unique FK, provider String(16), model String(128), base_url String(255) nullable, credentials_enc Text (Fernet JSON), updated_at.
+- [ ] `llm.py`: `LLMReply` (pydantic: `text: str`, `tool_calls: list[LLMToolCall {id, name, args}]`, `raw_blocks: list | None` for anthropic continuation), `LLMClient` protocol with `async chat(system, messages, tools) -> LLMReply` and `async generate_json(system, prompt, schema) -> dict`; `AnthropicLLM` (AsyncAnthropic or AsyncAnthropicBedrock when provider=bedrock; adaptive thinking for anthropic provider; structured output via `output_config={"format": {"type": "json_schema", "schema": …}}`) and `OpenAILLM` (AsyncOpenAI with base_url; tools mapped to function-calling; `response_format={"type": "json_schema", …}`); `async resolve_llm(db, user_id) -> LLMClient | None` — reads ai_settings row, decrypts credentials, falls back to env `ANTHROPIC_API_KEY`.
+- [ ] `routes/ai.py`: `GET /ai/status` → `{configured, provider, model}`; `GET /ai/settings` (no secrets, `configured` flag); `PUT /ai/settings {provider, model, base_url?, api_key?, aws_access_key_id?, aws_secret_access_key?, region?}` — validates provider, encrypts credential JSON via `core/security`, upserts row; `POST /ai/settings/test` — one tiny `generate_json`/`chat` round-trip, returns `{ok, error?}`; `require_ai` helper → 503 when `resolve_llm` returns None. Register router.
 - [ ] Commit.
 
 ### Task 7: ai_proposals table + enums
@@ -124,7 +111,8 @@ class AIProposal(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 ```
 
-- [ ] Migration 0004 mirroring 0003 style (`op.create_table` matching columns, revision chain 0003→0004).
+- [ ] Model `AISettings`: user_id unique FK, provider String(16), model String(128), base_url String(255) nullable, credentials_enc Text nullable, updated_at.
+- [ ] Migration 0004 mirroring 0003 style — creates BOTH `ai_proposals` and `ai_settings` (revision chain 0003→0004).
 - [ ] Commit.
 
 ### Task 8: AI read-only tools + propose_trade (TDD)
@@ -144,7 +132,7 @@ class AIProposal(Base):
 
 ```python
 async def chat(db, redis, user, account, messages: list[dict]) -> dict:
-    client = get_client()
+    client = resolve_llm(db, user.id)
     convo = list(messages)
     proposals: list[uuid.UUID] = []
     for _ in range(8):  # tool-round cap
@@ -202,7 +190,8 @@ class AsyncStrategyBase(StrategyBase):
 **Files:** Create `app/ai/page.tsx`, `components/ai/ChatPanel.tsx`, `components/ai/ProposalCard.tsx`; Modify `lib/types.ts`
 
 - [ ] Types: `AIStatus {configured, model}`, `AIProposal {…fields…}`, `ChatMessage {role, content}` (content blocks typed loosely).
-- [ ] Page: `useApi("/ai/status")`; unconfigured → setup `Card` with env instructions; configured → two-column: `ChatPanel` (account selector from `/brokers/accounts`, transcript state client-side, POST `/ai/analyst/chat`, render text blocks, inline `ProposalCard` for returned proposal ids) + pending proposals list (`/ai/proposals?status=PROPOSED`, 10s poll) with Approve/Reject → toasts.
+- [ ] `components/ai/AISettingsCard.tsx`: provider select (Anthropic Claude / OpenAI / OpenRouter / Amazon Bedrock), model input with per-provider placeholder, write-only API-key password field (shows "configured" pill when set), base URL field (openrouter/custom, prefilled `https://openrouter.ai/api/v1`), AWS access key/secret/region fields when bedrock, Test + Save buttons → PUT `/ai/settings`, POST `/ai/settings/test`, toasts.
+- [ ] Page: `useApi("/ai/status")`; unconfigured → settings card front-and-center; configured → settings collapsible + two-column: `ChatPanel` (account selector from `/brokers/accounts`, transcript state client-side, POST `/ai/analyst/chat`, render text blocks, inline `ProposalCard` for returned proposal ids) + pending proposals list (`/ai/proposals?status=PROPOSED`, 10s poll) with Approve/Reject → toasts.
 - [ ] `ProposalCard`: symbol/side/qty/type/rationale, status pill, Approve (primary) / Reject (ghost), busy states.
 - [ ] Build green. Commit.
 
