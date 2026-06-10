@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, setToken } from "@/lib/api";
-import { Button, ErrorNote } from "@/components/ui";
+import { Button, ErrorNote, Pill, inputClass, labelClass } from "@/components/ui";
 
 interface AuthResponse {
   token: string;
@@ -37,39 +37,49 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center">
-      <form onSubmit={submit} className="w-96 rounded-lg border border-zinc-800 bg-zinc-900 p-6">
-        <h1 className="mb-1 text-xl font-bold">trader</h1>
-        <p className="mb-6 text-sm text-zinc-500">
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-sm rounded-xl border border-line bg-panel p-7 shadow-2xl shadow-black/30"
+      >
+        <div className="mb-1 flex items-center gap-2">
+          <h1 className="text-2xl font-bold tracking-tight">
+            trader<span className="text-accent">_</span>
+          </h1>
+          <Pill value="paper" label="PAPER" />
+        </div>
+        <p className="mb-7 text-sm text-ink-dim">
           Paper-first algo trading. Seed login: demo@trader.local / demo1234
         </p>
-        <label className="mb-1 block text-xs uppercase text-zinc-500">Email</label>
+        <label className={labelClass}>Email</label>
         <input
-          className="mb-4 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+          className={`${inputClass} mb-4`}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           type="email"
           required
         />
-        <label className="mb-1 block text-xs uppercase text-zinc-500">Password</label>
+        <label className={labelClass}>Password</label>
         <input
-          className="mb-6 w-full rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm"
+          className={`${inputClass} mb-6`}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           type="password"
           required
           minLength={8}
         />
-        <Button type="submit" variant="primary" disabled={busy}>
-          {mode === "login" ? "Log in" : "Create account"}
-        </Button>
-        <button
-          type="button"
-          className="ml-4 text-sm text-zinc-500 hover:text-zinc-300"
-          onClick={() => setMode(mode === "login" ? "register" : "login")}
-        >
-          {mode === "login" ? "Need an account?" : "Have an account?"}
-        </button>
+        <div className="flex items-center justify-between">
+          <Button type="submit" variant="primary" disabled={busy}>
+            {busy ? "…" : mode === "login" ? "Log in" : "Create account"}
+          </Button>
+          <button
+            type="button"
+            className="text-sm text-ink-faint hover:text-ink"
+            onClick={() => setMode(mode === "login" ? "register" : "login")}
+          >
+            {mode === "login" ? "Need an account?" : "Have an account?"}
+          </button>
+        </div>
         <ErrorNote message={error} />
       </form>
     </div>

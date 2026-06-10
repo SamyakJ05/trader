@@ -73,8 +73,8 @@ export function CapabilityBadges({ capabilities }: { capabilities: BrokerCapabil
           title={`Broker API ${capabilities[field] ? "supports" : "does not support"} ${label}. This describes the broker, not our adapter.`}
           className={`rounded px-2 py-0.5 text-xs ${
             capabilities[field]
-              ? "bg-emerald-950 text-emerald-400"
-              : "bg-zinc-800 text-zinc-600 line-through"
+              ? "bg-gain/10 text-gain"
+              : "bg-panel-2 text-ink-faint line-through"
           }`}
         >
           {label}

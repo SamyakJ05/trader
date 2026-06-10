@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Shell from "@/components/Shell";
-import { Card, Pill, Td, Th } from "@/components/ui";
+import { Card, EmptyState, PageHeader, Pill, Skeleton, Td, Th, inputClass } from "@/components/ui";
 import { useApi } from "@/lib/useApi";
 import { AuditEvent } from "@/lib/types";
 
@@ -18,56 +18,80 @@ const EVENT_TYPES = [
   "KILL_SWITCH",
   "BROKER_SESSION",
   "BROKER_SYNC",
+  "AI_PROPOSAL",
+  "AI_DECISION",
 ];
 
 export default function AuditPage() {
   const [filter, setFilter] = useState("");
   const query = filter ? `&event_type=${filter}` : "";
-  const { data } = useApi<{ events: AuditEvent[] }>(`/audit/events?limit=100${query}`, 10000);
+  const { data, loading } = useApi<{ events: AuditEvent[] }>(
+    `/audit/events?limit=100${query}`,
+    10000
+  );
 
   return (
     <Shell>
-      <div className="mb-4 flex items-center gap-4">
-        <h1 className="text-xl font-bold">Audit Log</h1>
-        <select
-          className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-sm"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        >
-          {EVENT_TYPES.map((t) => (
-            <option key={t} value={t}>{t || "all events"}</option>
-          ))}
-        </select>
-      </div>
-      <Card>
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-zinc-800">
-              <Th>#</Th><Th>Time</Th><Th>Event</Th><Th>Entity</Th><Th>Payload</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {data?.events.map((e) => (
-              <tr key={e.id} className="border-b border-zinc-900 align-top">
-                <Td className="text-zinc-600">{e.id}</Td>
-                <Td className="whitespace-nowrap text-zinc-500">
-                  {new Date(e.ts).toLocaleTimeString()}
-                </Td>
-                <Td><Pill value={e.event_type} /></Td>
-                <Td className="text-zinc-400">
-                  {e.entity_type}
-                  {e.entity_id ? ` · ${e.entity_id.slice(0, 8)}` : ""}
-                </Td>
-                <Td>
-                  <pre className="max-w-xl overflow-x-auto text-xs text-zinc-500">
-                    {JSON.stringify(e.payload)}
-                  </pre>
-                </Td>
-              </tr>
+      <PageHeader
+        title="Audit Log"
+        sub="Append-only event stream — signals, risk checks, orders, sessions"
+        action={
+          <select
+            className={`${inputClass} w-auto`}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          >
+            {EVENT_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t || "all events"}
+              </option>
             ))}
-          </tbody>
-        </table>
-      </Card>
+          </select>
+        }
+      />
+      {loading && !data ? (
+        <Skeleton className="h-64" />
+      ) : data?.events.length ? (
+        <Card pad={false}>
+          <div className="overflow-x-auto p-2">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-line">
+                  <Th>#</Th>
+                  <Th>Time</Th>
+                  <Th>Event</Th>
+                  <Th>Entity</Th>
+                  <Th>Payload</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.events.map((e) => (
+                  <tr key={e.id} className="border-b border-line/50 align-top last:border-0">
+                    <Td className="num text-ink-faint">{e.id}</Td>
+                    <Td className="num whitespace-nowrap text-ink-faint">
+                      {new Date(e.ts).toLocaleTimeString()}
+                    </Td>
+                    <Td>
+                      <Pill value={e.event_type} />
+                    </Td>
+                    <Td className="text-ink-dim">
+                      {e.entity_type}
+                      {e.entity_id ? ` · ${e.entity_id.slice(0, 8)}` : ""}
+                    </Td>
+                    <Td>
+                      <pre className="num max-w-xl overflow-x-auto text-xs text-ink-faint">
+                        {JSON.stringify(e.payload)}
+                      </pre>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      ) : (
+        <EmptyState title="No events" hint="Try a different event-type filter." />
+      )}
     </Shell>
   );
 }
