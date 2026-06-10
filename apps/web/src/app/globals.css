@@ -1,5 +1,47 @@
 @import "tailwindcss";
 
+@theme {
+  /* surfaces */
+  --color-bg: #0b0e14;
+  --color-panel: #11151d;
+  --color-panel-2: #161b25;
+  --color-line: #1f2733;
+  --color-line-2: #2a3441;
+
+  /* text */
+  --color-ink: #e6ebf2;
+  --color-ink-dim: #8b94a7;
+  --color-ink-faint: #5c6575;
+
+  /* semantics */
+  --color-accent: #22d3ee;
+  --color-accent-dim: #0e7490;
+  --color-gain: #34d399;
+  --color-loss: #f87171;
+  --color-warn: #fbbf24;
+
+  /* fonts (next/font variables set on <html>) */
+  --font-sans: var(--font-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jb-mono), ui-monospace, SFMono-Regular, monospace;
+}
+
 body {
-  @apply bg-zinc-950 text-zinc-100 antialiased;
+  @apply bg-bg text-ink antialiased;
+  font-family: var(--font-sans);
+}
+
+/* tabular numerals for money/qty cells */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-2) transparent;
 }
