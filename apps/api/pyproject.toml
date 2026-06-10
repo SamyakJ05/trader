@@ -10,6 +10,7 @@ dependencies = [
     "asyncpg>=0.30",
     "alembic>=1.14",
     "pydantic>=2.9",
+    "email-validator>=1.2",
     "pydantic-settings>=2.6",
     "redis>=5.2",
     "arq>=0.26",

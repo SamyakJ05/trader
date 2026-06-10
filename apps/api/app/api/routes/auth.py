@@ -1,7 +1,8 @@
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -11,18 +12,37 @@ from app.db.models import AuthSession, User
 from app.domain.enums import AuditEventType
 from app.services import audit
 
+
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def validate_user_email(email: str) -> str:
+    if not EMAIL_REGEX.match(email):
+        raise ValueError("value is not a valid email address")
+    return email.lower()
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str = Field(min_length=8, max_length=128)
     full_name: str | None = None
 
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return validate_user_email(value)
+
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        return validate_user_email(value)
 
 
 class UserOut(BaseModel):
