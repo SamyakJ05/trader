@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Shell from "@/components/Shell";
-import { Button, ErrorNote } from "@/components/ui";
+import { Button, EmptyState, PageHeader, Skeleton } from "@/components/ui";
+import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { BrokerAccount, BrokerCapabilities } from "@/lib/types";
@@ -11,20 +12,18 @@ import {
   BrokerConnectionCard,
 } from "@/components/broker/BrokerConnectionCard";
 import {
-  BrokerConnectModal,
+  BrokerConnectWizard,
   SessionTokenModal,
-} from "@/components/broker/BrokerConnectModal";
+} from "@/components/broker/BrokerConnectWizard";
 
 export default function BrokersPage() {
-  const { data: accounts, reload } = useApi<BrokerAccount[]>("/brokers/accounts", 15000);
+  const { data: accounts, loading, reload } = useApi<BrokerAccount[]>("/brokers/accounts", 15000);
   const { data: capabilities } = useApi<Record<string, BrokerCapabilities>>(
     "/brokers/capabilities"
   );
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const { push } = useToast();
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [tokenFor, setTokenFor] = useState<BrokerAccount | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
 
@@ -32,18 +31,17 @@ export default function BrokersPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("connected")) {
-      setNotice("Zerodha session stored — run “Verify read access” to confirm the read path.");
+      push("success", "Zerodha session stored — run “Verify read access” to confirm the read path.");
     } else if (params.get("error")) {
-      setError(`Broker connection failed: ${params.get("error")}`);
+      push("error", `Broker connection failed: ${params.get("error")}`);
     }
     if (params.get("connected") || params.get("error")) {
       window.history.replaceState(null, "", "/brokers");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleAction(account: BrokerAccount, action: AccountAction) {
-    setError(null);
-    setNotice(null);
     setBusyId(account.id);
     try {
       switch (action) {
@@ -56,25 +54,24 @@ export default function BrokersPage() {
             window.location.href = res.login_url; // Kite login redirect flow
             return;
           }
-          setNotice(`Connection status: ${res.status}`);
+          push("info", `Connection status: ${res.status}`);
           break;
         }
         case "reconnect":
           await api(`/brokers/accounts/${account.id}/refresh-session`, { method: "POST" });
+          push("success", "Session refreshed");
           break;
         case "disconnect":
           await api(`/brokers/accounts/${account.id}/disconnect`, { method: "POST" });
+          push("info", "Disconnected");
           break;
         case "verify": {
           const res = await api<{ verified: boolean; checks: Record<string, string> }>(
             `/brokers/accounts/${account.id}/verify`,
             { method: "POST" }
           );
-          setNotice(
-            res.verified
-              ? "Read access verified (profile + funds)."
-              : `Verification failed: ${JSON.stringify(res.checks)}`
-          );
+          if (res.verified) push("success", "Read access verified (profile + funds).");
+          else push("error", `Verification failed: ${JSON.stringify(res.checks)}`);
           break;
         }
         case "sync": {
@@ -82,7 +79,8 @@ export default function BrokersPage() {
             `/brokers/accounts/${account.id}/sync`,
             { method: "POST" }
           );
-          if (res.skipped?.length) setNotice(`Synced with skips: ${res.skipped.join("; ")}`);
+          if (res.skipped?.length) push("info", `Synced with skips: ${res.skipped.join("; ")}`);
+          else push("success", "Synced");
           break;
         }
         case "set-token":
@@ -98,31 +96,14 @@ export default function BrokersPage() {
         case "delete":
           if (!window.confirm(`Delete connection “${account.label}”?`)) break;
           await api(`/brokers/accounts/${account.id}`, { method: "DELETE" });
+          push("info", "Connection deleted");
           break;
       }
       reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Action failed");
+      push("error", err instanceof Error ? err.message : "Action failed");
     } finally {
       setBusyId(null);
-    }
-  }
-
-  async function createAccount(data: {
-    broker: string;
-    label: string;
-    credential_ref: string | null;
-  }) {
-    setCreateError(null);
-    try {
-      await api("/brokers/accounts", {
-        method: "POST",
-        body: JSON.stringify({ ...data, environment: "paper" }),
-      });
-      setCreateOpen(false);
-      reload();
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Failed");
     }
   }
 
@@ -135,7 +116,7 @@ export default function BrokersPage() {
         body: JSON.stringify({ token }),
       });
       setTokenFor(null);
-      setNotice("Token stored (encrypted). Run “Verify read access” to confirm it works.");
+      push("success", "Token stored (encrypted). Run “Verify read access” to confirm it works.");
       reload();
     } catch (err) {
       setTokenError(err instanceof Error ? err.message : "Failed");
@@ -144,43 +125,50 @@ export default function BrokersPage() {
 
   return (
     <Shell>
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">Broker Connections</h1>
-        <Button variant="primary" onClick={() => setCreateOpen(true)}>
-          Create connection
-        </Button>
-      </div>
+      <PageHeader
+        title="Broker Connections"
+        sub="Connect, verify and sync broker accounts — paper simulator or real brokers"
+        action={
+          <Button variant="primary" onClick={() => setWizardOpen(true)}>
+            Connect broker
+          </Button>
+        }
+      />
 
-      <ErrorNote message={error} />
-      {notice && (
-        <p className="mb-3 rounded border border-sky-800 bg-sky-950/50 p-2 text-sm text-sky-300">
-          {notice}
-        </p>
+      {loading && !accounts ? (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <Skeleton className="h-56" />
+          <Skeleton className="h-56" />
+        </div>
+      ) : accounts?.length ? (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          {accounts.map((account) => (
+            <BrokerConnectionCard
+              key={account.id}
+              account={account}
+              capabilities={capabilities?.[account.broker]}
+              onAction={(action) => handleAction(account, action)}
+              busy={busyId === account.id}
+            />
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          title="No broker connections"
+          hint="Start with the paper simulator — one click, virtual cash, no credentials."
+          action={
+            <Button variant="primary" onClick={() => setWizardOpen(true)}>
+              Connect broker
+            </Button>
+          }
+        />
       )}
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {accounts?.map((account) => (
-          <BrokerConnectionCard
-            key={account.id}
-            account={account}
-            capabilities={capabilities?.[account.broker]}
-            onAction={(action) => handleAction(account, action)}
-            busy={busyId === account.id}
-          />
-        ))}
-      </div>
-      {!accounts?.length && (
-        <p className="text-sm text-zinc-500">
-          No broker connections. Create a paper account to start.
-        </p>
-      )}
-
-      <BrokerConnectModal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreate={createAccount}
-        error={createError}
-        busy={false}
+      <BrokerConnectWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        capabilities={capabilities ?? undefined}
+        onDone={reload}
       />
       <SessionTokenModal
         open={tokenFor !== null}

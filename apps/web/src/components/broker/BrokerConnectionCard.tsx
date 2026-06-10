@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Card } from "../ui";
+import { Button, Card, Pill } from "../ui";
 import { BrokerAccount, BrokerCapabilities } from "@/lib/types";
 import {
   AdapterStatusBadge,
@@ -11,7 +11,6 @@ import {
   SyncStatusChip,
   TradePathChip,
 } from "./badges";
-import { Pill } from "../ui";
 
 export type AccountAction =
   | "connect"
@@ -56,14 +55,14 @@ export function BrokerConnectionCard({
     <Card>
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-base font-semibold">
+          <p className="text-base font-semibold tracking-tight">
             {account.label}{" "}
-            <span className="text-sm font-normal text-zinc-500">
+            <span className="text-sm font-normal text-ink-faint">
               {capabilities?.display_name ?? account.broker}
               {account.broker_client_id ? ` · ${account.broker_client_id}` : ""}
             </span>
           </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
             <EnvironmentPill environment={account.environment} />
             <Pill value={account.status} />
             <AdapterStatusBadge status={account.adapter_status} />
@@ -76,8 +75,8 @@ export function BrokerConnectionCard({
       </div>
 
       {capabilities && (
-        <div className="mt-3">
-          <p className="mb-1 text-xs uppercase text-zinc-500">
+        <div className="mt-3.5">
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
             Broker API capabilities (not our adapter status)
           </p>
           <CapabilityBadges capabilities={capabilities} />
@@ -85,48 +84,50 @@ export function BrokerConnectionCard({
       )}
 
       {account.status_message && (
-        <p className="mt-3 rounded border border-amber-800 bg-amber-950/40 p-2 text-xs text-amber-300">
+        <p className="mt-3 rounded-lg border border-warn/30 bg-warn/10 p-2.5 text-xs text-warn">
           {account.status_message}
         </p>
       )}
       {warning && (
-        <p className="mt-3 rounded border border-amber-800 bg-amber-950/40 p-2 text-xs text-amber-300">
+        <p className="mt-3 rounded-lg border border-warn/30 bg-warn/10 p-2.5 text-xs text-warn">
           {warning}
         </p>
       )}
       {capabilities && capabilities.adapter_status !== "working" && (
-        <p className="mt-2 text-xs text-zinc-500">{capabilities.notes}</p>
+        <p className="mt-2 text-xs text-ink-faint">{capabilities.notes}</p>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-2">
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3.5">
         {account.broker === "zerodha" && (
           <>
-            <Button variant="primary" disabled={busy} onClick={() => onAction("connect")}>
+            <Button size="sm" variant="primary" disabled={busy} onClick={() => onAction("connect")}>
               Connect
             </Button>
-            <Button disabled={busy} onClick={() => onAction("reconnect")}>
+            <Button size="sm" disabled={busy} onClick={() => onAction("reconnect")}>
               Reconnect
             </Button>
           </>
         )}
         {tokenBrokers && (
-          <Button variant="primary" disabled={busy} onClick={() => onAction("set-token")}>
+          <Button size="sm" variant="primary" disabled={busy} onClick={() => onAction("set-token")}>
             Set token
           </Button>
         )}
-        <Button disabled={busy} onClick={() => onAction("verify")}>
+        <Button size="sm" disabled={busy} onClick={() => onAction("verify")}>
           Verify read access
         </Button>
-        <Button disabled={busy} onClick={() => onAction("sync")}>
+        <Button size="sm" disabled={busy} onClick={() => onAction("sync")}>
           Sync now
         </Button>
+        <span className="flex-1" />
         {account.broker !== "paper" && (
           <>
-            <Button disabled={busy} onClick={() => onAction("disconnect")}>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAction("disconnect")}>
               Disconnect
             </Button>
             <Button
-              variant={account.live_enabled ? "danger" : "default"}
+              size="sm"
+              variant={account.live_enabled ? "danger" : "ghost"}
               disabled={busy}
               onClick={() => onAction("toggle-live")}
             >
@@ -134,7 +135,7 @@ export function BrokerConnectionCard({
             </Button>
           </>
         )}
-        <Button variant="danger" disabled={busy} onClick={() => onAction("delete")}>
+        <Button size="sm" variant="danger" disabled={busy} onClick={() => onAction("delete")}>
           Delete
         </Button>
       </div>
