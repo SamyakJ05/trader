@@ -1,0 +1,329 @@
+"""AI trading surface: provider settings, analyst chat, trade proposals,
+and the strategy generator. Secrets are encrypted at rest and never returned.
+Approval is the only path from a proposal to an order, and it goes through
+the standard order pipeline."""
+
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+
+from app.core.config import get_settings
+from app.core.deps import CurrentUser, DbSession
+from app.core.redis import get_redis
+from app.db.models import AIProposal, AISettings, BrokerAccount
+from app.domain.enums import (
+    AIProposalStatus,
+    AuditEventType,
+    Exchange,
+    OrderSide,
+    OrderType,
+    ProductType,
+)
+from app.domain.models import OrderRequest
+from app.services import audit
+from app.services import orders as order_service
+from app.services.ai import analyst, generator
+from app.services.ai.llm import (
+    DEFAULT_MODELS,
+    OPENROUTER_BASE_URL,
+    PROVIDERS,
+    LLMError,
+    build_credentials_blob,
+    get_ai_settings,
+    resolve_llm,
+)
+
+router = APIRouter(prefix="/ai", tags=["ai"])
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# ── status + settings ────────────────────────────────────────────────
+
+
+@router.get("/status")
+async def ai_status(user: CurrentUser, db: DbSession):
+    row = await get_ai_settings(db, user.id)
+    if row is not None and row.credentials_enc:
+        return {"configured": True, "provider": row.provider, "model": row.model}
+    settings = get_settings()
+    if settings.anthropic_api_key:
+        return {"configured": True, "provider": "anthropic", "model": settings.ai_model}
+    return {"configured": False, "provider": None, "model": None}
+
+
+class AISettingsBody(BaseModel):
+    provider: str
+    model: str = Field(min_length=1, max_length=128)
+    base_url: str | None = None
+    api_key: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    region: str | None = None
+
+
+@router.get("/settings")
+async def read_settings(user: CurrentUser, db: DbSession):
+    row = await get_ai_settings(db, user.id)
+    env_fallback = bool(get_settings().anthropic_api_key)
+    if row is None:
+        return {
+            "provider": "anthropic" if env_fallback else None,
+            "model": get_settings().ai_model if env_fallback else None,
+            "base_url": None,
+            "configured": env_fallback,
+            "source": "env" if env_fallback else None,
+            "providers": list(PROVIDERS),
+            "default_models": DEFAULT_MODELS,
+        }
+    return {
+        "provider": row.provider,
+        "model": row.model,
+        "base_url": row.base_url,
+        "configured": bool(row.credentials_enc),
+        "source": "settings",
+        "providers": list(PROVIDERS),
+        "default_models": DEFAULT_MODELS,
+    }
+
+
+@router.put("/settings")
+async def write_settings(body: AISettingsBody, user: CurrentUser, db: DbSession):
+    if body.provider not in PROVIDERS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Unknown provider {body.provider!r}; supported: {list(PROVIDERS)}",
+        )
+    if body.provider == "bedrock":
+        if not (body.aws_access_key_id and body.aws_secret_access_key and body.region):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Bedrock needs aws_access_key_id, aws_secret_access_key and region",
+            )
+    elif not body.api_key:
+        row = await get_ai_settings(db, user.id)
+        # Allow model/base_url updates without re-entering the key.
+        if row is None or row.provider != body.provider or not row.credentials_enc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "api_key is required")
+
+    row = await get_ai_settings(db, user.id)
+    if row is None:
+        row = AISettings(user_id=user.id, provider=body.provider, model=body.model)
+        db.add(row)
+
+    row.provider = body.provider
+    row.model = body.model
+    row.base_url = body.base_url or (
+        OPENROUTER_BASE_URL if body.provider == "openrouter" else None
+    )
+    if body.api_key or body.provider == "bedrock":
+        row.credentials_enc = build_credentials_blob(
+            body.provider,
+            body.api_key,
+            body.aws_access_key_id,
+            body.aws_secret_access_key,
+            body.region,
+        )
+    await audit.emit(
+        db,
+        AuditEventType.USER_ACTION,
+        user_id=user.id,
+        entity_type="ai_settings",
+        payload={"action": "update", "provider": body.provider, "model": body.model},
+    )
+    await db.commit()
+    return {"provider": row.provider, "model": row.model, "configured": True}
+
+
+@router.post("/settings/test")
+async def test_settings(user: CurrentUser, db: DbSession):
+    llm = await resolve_llm(db, user.id)
+    if llm is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AI is not configured")
+    try:
+        out = await llm.generate_json(
+            "You are a connectivity check.",
+            "Reply with JSON: {\"ok\": true}",
+            {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+        )
+        return {"ok": bool(out.get("ok")), "provider": llm.provider, "model": llm.model}
+    except LLMError as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+async def _require_llm(db, user_id):
+    llm = await resolve_llm(db, user_id)
+    if llm is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "AI is not configured — add a provider in AI Trading settings "
+            "or set ANTHROPIC_API_KEY in the backend env",
+        )
+    return llm
+
+
+# ── analyst chat ─────────────────────────────────────────────────────
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=8000)
+
+
+class ChatBody(BaseModel):
+    broker_account_id: uuid.UUID
+    messages: list[ChatMessage] = Field(min_length=1, max_length=40)
+
+
+@router.post("/analyst/chat")
+async def analyst_chat(body: ChatBody, user: CurrentUser, db: DbSession):
+    llm = await _require_llm(db, user.id)
+    account = await db.get(BrokerAccount, body.broker_account_id)
+    if account is None or account.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Broker account not found")
+    if account.environment != "paper":
+        raise HTTPException(status.HTTP_409_CONFLICT, "AI analyst is paper-only")
+
+    try:
+        result = await analyst.chat(
+            db,
+            get_redis(),
+            llm,
+            user.id,
+            account,
+            [m.model_dump() for m in body.messages],
+        )
+    except LLMError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"AI provider error: {e}") from e
+
+    proposals = []
+    for pid in result["proposal_ids"]:
+        p = await db.get(AIProposal, uuid.UUID(pid))
+        if p is not None:
+            proposals.append(_proposal_out(p))
+    return {"reply": result["reply"], "proposals": proposals}
+
+
+# ── proposals ────────────────────────────────────────────────────────
+
+
+def _proposal_out(p: AIProposal) -> dict:
+    return {
+        "id": str(p.id),
+        "broker_account_id": str(p.broker_account_id),
+        "symbol": p.symbol,
+        "exchange": p.exchange,
+        "side": p.side,
+        "order_type": p.order_type,
+        "product": p.product,
+        "quantity": p.quantity,
+        "limit_price": str(p.limit_price) if p.limit_price is not None else None,
+        "rationale": p.rationale,
+        "status": p.status,
+        "order_id": str(p.order_id) if p.order_id else None,
+        "created_at": p.created_at.isoformat(),
+        "decided_at": p.decided_at.isoformat() if p.decided_at else None,
+    }
+
+
+@router.get("/proposals")
+async def list_proposals(user: CurrentUser, db: DbSession, status_filter: str | None = None):
+    query = select(AIProposal).where(AIProposal.user_id == user.id)
+    if status_filter:
+        query = query.where(AIProposal.status == status_filter)
+    query = query.order_by(AIProposal.created_at.desc()).limit(50)
+    result = await db.execute(query)
+    return [_proposal_out(p) for p in result.scalars()]
+
+
+async def _owned_proposal(db, user, proposal_id: uuid.UUID) -> AIProposal:
+    p = await db.get(AIProposal, proposal_id)
+    if p is None or p.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Proposal not found")
+    return p
+
+
+@router.post("/proposals/{proposal_id}/approve")
+async def approve_proposal(proposal_id: uuid.UUID, user: CurrentUser, db: DbSession):
+    p = await _owned_proposal(db, user, proposal_id)
+    if p.status != AIProposalStatus.PROPOSED.value:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Proposal already {p.status}")
+    account = await db.get(BrokerAccount, p.broker_account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Broker account no longer exists")
+
+    request = OrderRequest(
+        symbol=p.symbol,
+        exchange=Exchange(p.exchange),
+        side=OrderSide(p.side),
+        order_type=OrderType(p.order_type),
+        product=ProductType(p.product),
+        quantity=p.quantity,
+        price=p.limit_price,
+    )
+    order = await order_service.place_order(
+        db,
+        get_redis(),
+        user_id=user.id,
+        account=account,
+        request=request,
+        client_order_id=f"ai-{p.id.hex[:18]}",
+    )
+    p.status = AIProposalStatus.APPROVED.value
+    p.order_id = order.id
+    p.decided_at = utcnow()
+    await audit.emit(
+        db,
+        AuditEventType.USER_ACTION,
+        user_id=user.id,
+        entity_type="ai_proposal",
+        entity_id=p.id,
+        payload={"action": "approve", "order_id": str(order.id), "order_status": order.status},
+    )
+    await db.commit()
+    return {"proposal": _proposal_out(p), "order_status": order.status}
+
+
+@router.post("/proposals/{proposal_id}/reject")
+async def reject_proposal(proposal_id: uuid.UUID, user: CurrentUser, db: DbSession):
+    p = await _owned_proposal(db, user, proposal_id)
+    if p.status != AIProposalStatus.PROPOSED.value:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Proposal already {p.status}")
+    p.status = AIProposalStatus.REJECTED.value
+    p.decided_at = utcnow()
+    await audit.emit(
+        db,
+        AuditEventType.USER_ACTION,
+        user_id=user.id,
+        entity_type="ai_proposal",
+        entity_id=p.id,
+        payload={"action": "reject"},
+    )
+    await db.commit()
+    return _proposal_out(p)
+
+
+# ── strategy generator ───────────────────────────────────────────────
+
+
+class GenerateBody(BaseModel):
+    prompt: str = Field(min_length=8, max_length=2000)
+
+
+@router.post("/strategies/generate")
+async def generate_strategy(body: GenerateBody, user: CurrentUser, db: DbSession):
+    llm = await _require_llm(db, user.id)
+    try:
+        return await generator.generate(llm, body.prompt)
+    except LLMError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"AI provider error: {e}") from e

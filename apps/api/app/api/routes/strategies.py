@@ -116,6 +116,14 @@ async def start(strategy_id: uuid.UUID, user: CurrentUser, db: DbSession):
             status.HTTP_409_CONFLICT,
             "Live strategy execution is disabled in this MVP build",
         )
+    if strategy.kind == "ai_agent":
+        from app.services.ai.llm import resolve_llm
+
+        if await resolve_llm(db, user.id) is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "AI is not configured — set a provider on the AI Trading page first",
+            )
     strategy.status = StrategyStatus.RUNNING.value
     await audit.emit(
         db, AuditEventType.USER_ACTION, user_id=user.id,

@@ -35,3 +35,14 @@ class StrategyBase(ABC):
 
     @abstractmethod
     def evaluate(self, ctx: StrategyContext) -> list[Signal]: ...
+
+
+class AsyncStrategyBase(StrategyBase):
+    """Strategy that needs awaitable resources (LLM calls, redis guards).
+    The runner injects db/redis; sync evaluate() is intentionally unusable."""
+
+    def evaluate(self, ctx: StrategyContext) -> list[Signal]:
+        raise NotImplementedError(f"{self.kind} is async — use evaluate_async")
+
+    @abstractmethod
+    async def evaluate_async(self, ctx: StrategyContext, *, db, redis) -> list[Signal]: ...

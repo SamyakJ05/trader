@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     enable_live_trading: bool = False
     market_hours_enforced: bool = True
 
+    # AI trading. Env key is the zero-config fallback; per-user provider
+    # settings (anthropic/openai/openrouter/bedrock) live in ai_settings.
+    anthropic_api_key: str | None = None
+    ai_model: str = "claude-opus-4-8"
+
     zerodha_redirect_url: str = "http://localhost:8000/api/v1/brokers/zerodha/callback"
     web_base_url: str = "http://localhost:3000"
     cors_origins: list[str] = ["http://localhost:3000"]

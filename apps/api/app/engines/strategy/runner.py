@@ -23,7 +23,8 @@ from app.domain.enums import (
 )
 from app.domain.models import OrderRequest
 from app.engines.paper import market_sim
-from app.engines.strategy.base import Signal, StrategyBase, StrategyContext
+from app.engines.strategy.ai_agent import AiAgentStrategy
+from app.engines.strategy.base import AsyncStrategyBase, Signal, StrategyBase, StrategyContext
 from app.engines.strategy.sma_crossover import SmaCrossover
 from app.services import audit, killswitch
 from app.services import orders as order_service
@@ -32,6 +33,7 @@ logger = get_logger(__name__)
 
 STRATEGY_REGISTRY: dict[str, StrategyBase] = {
     SmaCrossover.kind: SmaCrossover(),
+    AiAgentStrategy.kind: AiAgentStrategy(),
 }
 
 _SIGNAL_SIDE = {
@@ -135,10 +137,19 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
                 symbol=symbol,
                 prices=history,
                 position_quantity=await _position_quantity(db, account.id, symbol),
-                params=strategy.params,
+                # _strategy_id/_user_id let async strategies (ai_agent) resolve
+                # their LLM config and rate-limit keys without schema changes.
+                params={
+                    **strategy.params,
+                    "_strategy_id": str(strategy.id),
+                    "_user_id": str(strategy.user_id),
+                },
             )
             try:
-                signals = impl.evaluate(ctx)
+                if isinstance(impl, AsyncStrategyBase):
+                    signals = await impl.evaluate_async(ctx, db=db, redis=redis)
+                else:
+                    signals = impl.evaluate(ctx)
             except Exception:
                 logger.exception("strategy_evaluate_failed", strategy=str(strategy.id))
                 strategy.status = StrategyStatus.ERROR.value

@@ -124,6 +124,14 @@ class AuditEventType(StrEnum):
     BROKER_SESSION = "BROKER_SESSION"
     BROKER_SYNC = "BROKER_SYNC"
     WEBHOOK_RECEIVED = "WEBHOOK_RECEIVED"
+    AI_PROPOSAL = "AI_PROPOSAL"
+    AI_DECISION = "AI_DECISION"
+
+
+class AIProposalStatus(StrEnum):
+    PROPOSED = "PROPOSED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class AdapterStatus(StrEnum):

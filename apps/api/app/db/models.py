@@ -301,6 +301,50 @@ class WebhookEvent(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class AIProposal(Base):
+    """Trade suggestion from the AI analyst. Never an order by itself —
+    a human approval routes it through the standard order pipeline."""
+
+    __tablename__ = "ai_proposals"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    broker_account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("broker_accounts.id", ondelete="CASCADE")
+    )
+    symbol: Mapped[str] = mapped_column(String(64))
+    exchange: Mapped[str] = mapped_column(String(8), default="NSE")
+    side: Mapped[str] = mapped_column(String(4))
+    order_type: Mapped[str] = mapped_column(String(8), default="MARKET")
+    product: Mapped[str] = mapped_column(String(8), default="MIS")
+    quantity: Mapped[int] = mapped_column(Integer)
+    limit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    rationale: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="PROPOSED", index=True)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("orders.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AISettings(Base):
+    """Per-user AI provider configuration. Credentials are a Fernet-encrypted
+    JSON blob (see core/security.py) and are never returned by the API."""
+
+    __tablename__ = "ai_settings"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True
+    )
+    provider: Mapped[str] = mapped_column(String(16))  # anthropic|openai|openrouter|bedrock
+    model: Mapped[str] = mapped_column(String(128))
+    base_url: Mapped[str | None] = mapped_column(String(255))
+    credentials_enc: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
 

@@ -19,6 +19,8 @@ dependencies = [
     "bcrypt>=4.2",
     "cryptography>=43.0",
     "greenlet>=3.1",
+    "anthropic>=0.40",
+    "openai>=1.50",
 ]
 
 [project.optional-dependencies]

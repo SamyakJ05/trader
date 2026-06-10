@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    ai,
     audit_log,
     auth,
     brokers,
@@ -20,6 +21,7 @@ api_router.include_router(dashboard.router)
 api_router.include_router(portfolio.router)
 api_router.include_router(orders.router)
 api_router.include_router(strategies.router)
+api_router.include_router(ai.router)
 api_router.include_router(risk.router)
 api_router.include_router(audit_log.router)
 api_router.include_router(webhooks.router)
