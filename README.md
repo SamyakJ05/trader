@@ -70,6 +70,28 @@ hour; set `true` to enforce NSE hours (09:15–15:30 IST, Mon–Fri).
 Useful targets: `make logs`, `make test`, `make lint`, `make psql`,
 `make reset-db` (nuke + remigrate + reseed).
 
+## AI trading (paper-only)
+
+The AI Trading page adds three layers, all gated behind the same pipeline as
+manual orders — the AI can never place an order directly:
+
+- **Analyst chat** — an LLM with read-only tools over your positions, orders,
+  funds, simulated quotes, strategies and risk rules. Trade ideas become
+  `ai_proposals` rows that you approve or reject; approval routes through the
+  standard order pipeline (idempotency → audit → risk → dispatch).
+- **Strategy generator** — plain English → a validated strategy draft
+  (constrained to registered strategy kinds), created as a normal DRAFT
+  strategy via the strategies API.
+- **`ai_agent` strategy kind** — the LLM decides BUY/SELL/HOLD per symbol on
+  the worker tick, guarded by a per-symbol interval and a daily decision cap;
+  decisions become ordinary signals through the risk engine and kill switches.
+  Every decision (including HOLD) is audited as `AI_DECISION`.
+
+Providers: Anthropic Claude, OpenAI, OpenRouter, or Amazon Bedrock —
+configured per user on the AI Trading page (keys Fernet-encrypted in
+`ai_settings`, never re-displayed), or via the `ANTHROPIC_API_KEY` env
+fallback. Without a provider the rest of the app works unchanged.
+
 ## What is scaffolded vs working
 
 **Working (exercised end-to-end locally):**

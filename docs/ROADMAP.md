@@ -1,5 +1,12 @@
 # Roadmap
 
+## Shipped 2026-06: UI redesign + AI trading (paper-only)
+- [x] Design system + component kit, broker connect wizard
+- [x] AI analyst chat with human-approved proposals (multi-provider:
+      Anthropic / OpenAI / OpenRouter / Bedrock, keys encrypted at rest)
+- [x] NL strategy generator constrained to registered kinds
+- [x] `ai_agent` strategy kind (interval + daily-cap guards, audited decisions)
+
 ## Phase A — harden the paper core (now)
 - [ ] Integration tests for the order pipeline (testcontainers: pg + redis)
 - [ ] Paper holdings model (T+1 settlement of CNC fills into holdings)
