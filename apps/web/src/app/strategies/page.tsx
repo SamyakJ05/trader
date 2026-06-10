@@ -2,28 +2,32 @@
 
 import { useState } from "react";
 import Shell from "@/components/Shell";
-import { Button, Card, ErrorNote, Pill } from "@/components/ui";
+import { Button, Card, EmptyState, PageHeader, Pill, Skeleton } from "@/components/ui";
+import { IconSpark } from "@/components/icons";
+import { GenerateStrategyModal } from "@/components/ai/GenerateStrategyModal";
+import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { BrokerAccount, Strategy } from "@/lib/types";
+import { AIStatus, BrokerAccount, Strategy } from "@/lib/types";
 
 export default function StrategiesPage() {
-  const { data: strategies, reload } = useApi<Strategy[]>("/strategies", 10000);
+  const { data: strategies, loading, reload } = useApi<Strategy[]>("/strategies", 10000);
   const { data: accounts } = useApi<BrokerAccount[]>("/brokers/accounts");
-  const [error, setError] = useState<string | null>(null);
+  const { data: aiStatus } = useApi<AIStatus>("/ai/status");
+  const { push } = useToast();
+  const [generateOpen, setGenerateOpen] = useState(false);
 
   async function act(id: string, action: "start" | "stop") {
-    setError(null);
     try {
       await api(`/strategies/${id}/${action}`, { method: "POST" });
+      push("success", action === "start" ? "Strategy started" : "Strategy stopped");
       reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed");
+      push("error", err instanceof Error ? err.message : "Failed");
     }
   }
 
   async function kill(id: string, engaged: boolean) {
-    setError(null);
     try {
       await api("/system/killswitch", {
         method: "POST",
@@ -36,7 +40,7 @@ export default function StrategiesPage() {
       });
       reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed");
+      push("error", err instanceof Error ? err.message : "Failed");
     }
   }
 
@@ -45,40 +49,91 @@ export default function StrategiesPage() {
 
   return (
     <Shell>
-      <h1 className="mb-4 text-xl font-bold">Strategies</h1>
-      <ErrorNote message={error} />
-      <div className="grid grid-cols-2 gap-4">
-        {strategies?.map((s) => (
-          <Card key={s.id} title={s.name}>
-            <div className="mb-2 flex gap-2">
-              <Pill value={s.status} />
-              <Pill value={s.environment} />
-              {s.killed && <Pill value="KILLED" label="KILL SWITCH" />}
-            </div>
-            <p className="text-sm text-zinc-400">
-              {s.kind} · {s.symbols.join(", ")} · account: {accountLabel(s.broker_account_id)}
-            </p>
-            <pre className="mt-2 rounded bg-zinc-950 p-2 text-xs text-zinc-500">
-              {JSON.stringify(s.params, null, 2)}
-            </pre>
-            <div className="mt-3 flex gap-2">
-              {s.status !== "RUNNING" ? (
-                <Button variant="primary" onClick={() => act(s.id, "start")}>Start</Button>
-              ) : (
-                <Button onClick={() => act(s.id, "stop")}>Stop</Button>
-              )}
-              {s.killed ? (
-                <Button onClick={() => kill(s.id, false)}>Release kill</Button>
-              ) : (
-                <Button variant="danger" onClick={() => kill(s.id, true)}>Kill</Button>
-              )}
-            </div>
-          </Card>
-        ))}
-        {!strategies?.length && (
-          <p className="text-sm text-zinc-500">No strategies. Seed script creates a demo one.</p>
-        )}
-      </div>
+      <PageHeader
+        title="Strategies"
+        sub="Signal generators routed through the risk engine and order pipeline"
+        action={
+          <Button
+            variant="primary"
+            onClick={() => setGenerateOpen(true)}
+            disabled={!aiStatus?.configured}
+          >
+            <span className="flex items-center gap-1.5">
+              <IconSpark width={14} height={14} /> Generate with AI
+            </span>
+          </Button>
+        }
+      />
+      {!aiStatus?.configured && (
+        <p className="mb-4 text-xs text-ink-faint">
+          AI generation needs a provider — configure one on the AI Trading page.
+        </p>
+      )}
+
+      {loading && !strategies ? (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Skeleton className="h-48" />
+          <Skeleton className="h-48" />
+        </div>
+      ) : strategies?.length ? (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {strategies.map((s) => (
+            <Card key={s.id} title={s.name}>
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                <Pill value={s.status} />
+                <Pill value={s.environment} />
+                {s.kind === "ai_agent" && <Pill value="PROPOSED" label="AI AGENT" />}
+                {s.killed && <Pill value="KILLED" label="KILL SWITCH" />}
+              </div>
+              <p className="text-sm text-ink-dim">
+                {s.kind} · {s.symbols.join(", ")} · account: {accountLabel(s.broker_account_id)}
+              </p>
+              <pre className="num mt-2 overflow-x-auto rounded-lg bg-bg p-2.5 text-xs text-ink-faint">
+                {JSON.stringify(s.params, null, 2)}
+              </pre>
+              <div className="mt-3 flex gap-2">
+                {s.status !== "RUNNING" ? (
+                  <Button size="sm" variant="primary" onClick={() => act(s.id, "start")}>
+                    Start
+                  </Button>
+                ) : (
+                  <Button size="sm" onClick={() => act(s.id, "stop")}>
+                    Stop
+                  </Button>
+                )}
+                {s.killed ? (
+                  <Button size="sm" onClick={() => kill(s.id, false)}>
+                    Release kill
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="danger" onClick={() => kill(s.id, true)}>
+                    Kill
+                  </Button>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          title="No strategies yet"
+          hint="Generate one with AI or run the seed script for a demo SMA crossover."
+          action={
+            aiStatus?.configured ? (
+              <Button variant="primary" onClick={() => setGenerateOpen(true)}>
+                Generate with AI
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
+
+      <GenerateStrategyModal
+        open={generateOpen}
+        onClose={() => setGenerateOpen(false)}
+        accounts={accounts ?? []}
+        onCreated={reload}
+      />
     </Shell>
   );
 }

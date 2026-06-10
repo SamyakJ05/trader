@@ -157,3 +157,50 @@ export interface KillSwitchStatus {
   global_reason: string | null;
   killed_strategies: string[];
 }
+
+export interface AIStatus {
+  configured: boolean;
+  provider: string | null;
+  model: string | null;
+}
+
+export interface AISettingsInfo {
+  provider: string | null;
+  model: string | null;
+  base_url: string | null;
+  configured: boolean;
+  source: "env" | "settings" | null;
+  providers: string[];
+  default_models: Record<string, string>;
+}
+
+export interface AIProposal {
+  id: string;
+  broker_account_id: string;
+  symbol: string;
+  exchange: string;
+  side: string;
+  order_type: string;
+  product: string;
+  quantity: number;
+  limit_price: string | null;
+  rationale: string;
+  status: string;
+  order_id: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+  proposals?: AIProposal[];
+}
+
+export interface StrategyDraft {
+  name: string;
+  kind: string;
+  symbols: string[];
+  params: Record<string, unknown>;
+  rationale: string;
+}
