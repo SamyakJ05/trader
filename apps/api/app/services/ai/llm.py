@@ -18,7 +18,7 @@ mapped to OpenAI function-calling internally.
 import json
 import uuid as uuid_mod
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
