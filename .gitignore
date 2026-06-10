@@ -1,0 +1,21 @@
+# env / secrets
+.env
+.env.local
+*.pem
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.pytest_cache/
+dist/
+
+# node
+node_modules/
+.next/
+.pnpm-store/
+
+# misc
+.DS_Store
+*.log
