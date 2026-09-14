@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.domain import calendar
-from app.db.models import BrokerAccount, Position, RiskEvent, RiskRule
+from app.db.models import BrokerAccount, Position, RiskEvent, RiskRule, PaperHolding
 from app.domain.enums import (
     AuditEventType,
     OrderSide,
@@ -110,10 +110,7 @@ class RiskEngine:
     ) -> str | None:
         if rule_type == RiskRuleType.MARKET_HOURS:
             if get_settings().market_hours_enforced and not is_market_open():
-                return (
-                    "Outside NSE trading hours "
-                    "(09:15-15:30 IST on a trading day)"
-                )
+                return "Outside NSE trading hours (09:15-15:30 IST on a trading day)"
 
         elif rule_type == RiskRuleType.MAX_ORDER_NOTIONAL:
             limit = Decimal(str(params.get("max_notional", 100000)))
@@ -137,6 +134,17 @@ class RiskEngine:
             )
             position = result.scalar_one_or_none()
             current = position.quantity if position else 0
+            if environment == "paper" and request.product.value == "CNC":
+                holding = (
+                    await self.db.execute(
+                        select(PaperHolding).where(
+                            PaperHolding.broker_account_id == account.id,
+                            PaperHolding.symbol == request.symbol,
+                            PaperHolding.exchange == request.exchange.value,
+                        )
+                    )
+                ).scalar_one_or_none()
+                current += holding.quantity if holding else 0
             delta = request.quantity if request.side == OrderSide.BUY else -request.quantity
             if abs(current + delta) > limit_qty:
                 return (
@@ -155,8 +163,58 @@ class RiskEngine:
                     Position.quantity != 0,
                 )
             )
-            if result.scalar_one() >= limit_n:
-                return f"Open positions at limit ({limit_n})"
+            count = result.scalar_one()
+            if environment == "paper":
+                # A scrip may have both pending buys and settled shares; count once.
+                count += (
+                    await self.db.execute(
+                        select(func.count())
+                        .select_from(PaperHolding)
+                        .join(BrokerAccount)
+                        .where(
+                            BrokerAccount.user_id == user_id,
+                            PaperHolding.quantity > 0,
+                            ~select(Position.id)
+                            .where(
+                                Position.broker_account_id == PaperHolding.broker_account_id,
+                                Position.symbol == PaperHolding.symbol,
+                                Position.exchange == PaperHolding.exchange,
+                                Position.product == "CNC",
+                                Position.quantity != 0,
+                            )
+                            .exists(),
+                        )
+                    )
+                ).scalar_one()
+            if count >= limit_n:
+                existing = (
+                    await self.db.execute(
+                        select(Position.id)
+                        .where(
+                            Position.broker_account_id == account.id,
+                            Position.symbol == request.symbol,
+                            Position.exchange == request.exchange.value,
+                            Position.product == request.product.value,
+                            Position.quantity != 0,
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if existing is None and environment == "paper" and request.product.value == "CNC":
+                    existing = (
+                        await self.db.execute(
+                            select(PaperHolding.id)
+                            .where(
+                                PaperHolding.broker_account_id == account.id,
+                                PaperHolding.symbol == request.symbol,
+                                PaperHolding.exchange == request.exchange.value,
+                                PaperHolding.quantity > 0,
+                            )
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
+                if existing is None:
+                    return f"Open positions at limit ({limit_n})"
 
         elif rule_type == RiskRuleType.MAX_DAILY_LOSS:
             limit_loss = Decimal(str(params.get("max_loss", 10000)))

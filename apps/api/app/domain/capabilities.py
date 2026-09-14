@@ -47,7 +47,7 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         place_order=True,
         modify_order=True,
         cancel_order=True,
-        holdings=False,
+        holdings=True,
         positions=True,
         funds=True,
         instruments_dump=False,
@@ -56,8 +56,7 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         amo_orders=False,
         bracket_gtt=False,
         exchanges=["NSE", "BSE", "NFO"],
-        notes="Simulated fills against an internal price feed. No holdings model yet "
-        "(positions only).",
+        notes="Simulated fills with statutory charges, cash ledger and T+1 delivery holdings.",
     ),
     Broker.ZERODHA: BrokerCapabilities(
         broker=Broker.ZERODHA,
@@ -87,8 +86,7 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         broker=Broker.GROWW,
         adapter_status=AdapterStatus.SCAFFOLD,
         display_name="Groww Trading API",
-        auth_model="API key + secret (TOTP-based token generation) or "
-        "direct daily access token",
+        auth_model="API key + secret (TOTP-based token generation) or direct daily access token",
         session_validity="access token valid for the trading day",
         rate_limit_notes="documented per-endpoint limits; verify current numbers "
         "in Groww API docs before live use",

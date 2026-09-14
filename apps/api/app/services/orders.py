@@ -82,9 +82,7 @@ async def place_order(
     # Callers verify ownership when they resolve the account; this is the
     # backstop that makes a missed check at any call site non-exploitable.
     if account.user_id != user_id:
-        raise OrderServiceError(
-            "Broker account does not belong to this user — order refused"
-        )
+        raise OrderServiceError("Broker account does not belong to this user — order refused")
 
     # Idempotent replay: same client_order_id returns the original order.
     existing = await _existing_order(db, account.id, client_order_id)
@@ -279,6 +277,9 @@ async def modify_order(
 ) -> Order:
     if order.user_id != user_id:
         raise OrderServiceError("Order does not belong to this user — modify refused")
+    if order.environment == Environment.PAPER.value:
+        await paper_engine.ledger.lock_account(db, order.broker_account_id)
+        await db.refresh(order)
     if not OrderStatus(order.status).is_working and order.status != OrderStatus.ACCEPTED.value:
         raise OrderServiceError(f"Cannot modify order in status {order.status}")
     if order.environment != Environment.PAPER.value:
@@ -300,7 +301,11 @@ async def modify_order(
         entity_type="order",
         entity_id=order.id,
         correlation_id=order.client_order_id,
-        payload={"via": "modify", "from": old, "to": {"price": str(order.price), "quantity": order.quantity}},
+        payload={
+            "via": "modify",
+            "from": old,
+            "to": {"price": str(order.price), "quantity": order.quantity},
+        },
     )
     await db.commit()
     return order

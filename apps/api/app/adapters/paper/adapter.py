@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.adapters.base import BrokerAdapter, FeatureNotSupportedError
 from app.core.redis import get_redis
-from app.db.models import Order, Position
+from app.db.models import Order, Position, PaperHolding
 from app.db.session import async_session_factory
 from app.domain.enums import (
     Broker,
@@ -61,9 +61,34 @@ class PaperAdapter(BrokerAdapter):
         return Funds(available_cash=cash)
 
     async def get_holdings(self) -> list[Holding]:
-        raise FeatureNotSupportedError(
-            "Paper simulator models positions only; holdings not implemented"
-        )
+        async with async_session_factory() as db:
+            rows = (
+                (
+                    await db.execute(
+                        select(PaperHolding).where(
+                            PaperHolding.broker_account_id == self.account.id,
+                            PaperHolding.quantity > 0,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        redis = get_redis()
+        out = []
+        for row in rows:
+            last = await market_sim.get_price(redis, row.symbol)
+            out.append(
+                Holding(
+                    symbol=row.symbol,
+                    exchange=Exchange(row.exchange),
+                    quantity=row.quantity,
+                    average_price=row.average_price,
+                    last_price=last,
+                    pnl=(last - row.average_price) * row.quantity,
+                )
+            )
+        return out
 
     async def get_positions(self) -> list[BrokerPosition]:
         async with async_session_factory() as db:

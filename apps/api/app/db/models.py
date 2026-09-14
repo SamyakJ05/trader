@@ -67,9 +67,7 @@ class AuthSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # True for a session issued to finish TOTP enrolment. Its holder proved a
     # password but no second factor, so it authorises only the setup endpoints.
-    enrolment_only: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false"
-    )
+    enrolment_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     user: Mapped[User] = relationship()
 
@@ -82,7 +80,9 @@ class RecoveryCode(Base):
     __tablename__ = "recovery_codes"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
     code_hash: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -424,3 +424,78 @@ class IdempotencyKey(Base):
     purpose: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     response: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class CashLedger(Base):
+    __tablename__ = "cash_ledger"
+    __table_args__ = (
+        Index("ix_cash_ledger_account_id", "broker_account_id", "id"),
+        UniqueConstraint("fill_id", "entry_type"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    broker_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("broker_accounts.id"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    entry_type: Mapped[str] = mapped_column(String(16))
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    balance: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    fill_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("fills.id"))
+
+
+class PaperHolding(Base):
+    __tablename__ = "holdings"
+    __table_args__ = (UniqueConstraint("broker_account_id", "symbol", "exchange"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    broker_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("broker_accounts.id"))
+    symbol: Mapped[str] = mapped_column(String(64))
+    exchange: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[int] = mapped_column(Integer)
+    average_price: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+
+
+class PendingSettlement(Base):
+    __tablename__ = "pending_settlements"
+    __table_args__ = (Index("ix_settlements_due", "settles_on", "broker_account_id"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    broker_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("broker_accounts.id"))
+    fill_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("fills.id"), unique=True)
+    symbol: Mapped[str] = mapped_column(String(64))
+    exchange: Mapped[str] = mapped_column(String(8))
+    quantity: Mapped[int] = mapped_column(Integer)
+    price: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    settles_on: Mapped[date] = mapped_column(Date)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Candle(Base):
+    __tablename__ = "candles"
+    __table_args__ = (UniqueConstraint("symbol", "exchange", "interval", "source", "ts"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(64))
+    exchange: Mapped[str] = mapped_column(String(8))
+    interval: Mapped[str] = mapped_column(String(8))
+    source: Mapped[str] = mapped_column(String(32))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    open: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    high: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    low: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    close: Mapped[Decimal] = mapped_column(Numeric(18, 4))
+    volume: Mapped[int | None] = mapped_column(BigInteger)
+    # First/last observed tick timestamps preserve OHLC under out-of-order delivery.
+    first_tick_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_tick_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BacktestRun(Base):
+    __tablename__ = "backtest_runs"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    kind: Mapped[str] = mapped_column(String(64))
+    config: Mapped[dict] = mapped_column(JSONB)
+    results: Mapped[dict] = mapped_column(JSONB)

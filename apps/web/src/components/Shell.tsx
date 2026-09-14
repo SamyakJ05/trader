@@ -38,6 +38,7 @@ const NAV_GROUPS: { label: string; items: { href: string; label: string; icon: R
     label: "System",
     items: [
       { href: "/strategies", label: "Strategies", icon: <IconStrategy /> },
+      { href: "/backtests", label: "Backtests", icon: <IconStrategy /> },
       { href: "/risk", label: "Risk", icon: <IconRisk /> },
       { href: "/audit", label: "Audit Log", icon: <IconAudit /> },
       { href: "/security", label: "Security", icon: <IconSettings /> },

@@ -18,10 +18,13 @@ from app.db.models import (
     HoldingsSnapshot,
     Order,
     Position,
+    PaperHolding,
     Strategy,
 )
 from app.domain.enums import OrderStatus
 from app.services import killswitch
+from app.engines.paper import ledger
+from types import SimpleNamespace
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -76,8 +79,28 @@ async def dashboard_summary(user: VerifiedUser, db: DbSession):
     funds_total = Decimal("0")
     funds_known = True
     for a in accounts:
-        funds = await _latest_snapshot(db, FundsSnapshot, a.id)
-        holdings = await _latest_snapshot(db, HoldingsSnapshot, a.id)
+        if a.environment == "paper":
+            entry = await ledger.latest(db, a.id)
+            funds = SimpleNamespace(
+                available_cash=await ledger.get_cash(db, a.id),
+                ts=entry.ts if entry else a.created_at,
+            )
+            rows = (
+                (
+                    await db.execute(
+                        select(PaperHolding).where(
+                            PaperHolding.broker_account_id == a.id,
+                            PaperHolding.quantity > 0,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            holdings = SimpleNamespace(holdings=rows)
+        else:
+            funds = await _latest_snapshot(db, FundsSnapshot, a.id)
+            holdings = await _latest_snapshot(db, HoldingsSnapshot, a.id)
         if funds is not None:
             funds_total += funds.available_cash
         else:
@@ -151,9 +174,7 @@ async def dashboard_summary(user: VerifiedUser, db: DbSession):
         "killswitch": await killswitch.status(
             get_redis(),
             owned_strategy_ids=set(
-                (
-                    await db.execute(select(Strategy.id).where(Strategy.user_id == user.id))
-                ).scalars()
+                (await db.execute(select(Strategy.id).where(Strategy.user_id == user.id))).scalars()
             ),
         ),
         "recent_events": [

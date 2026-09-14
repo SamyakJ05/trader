@@ -178,3 +178,25 @@ Charges rates change with government budgets. This phase hardcodes current
 rates in a config module with a dated comment. If the platform runs long
 enough for rates to change mid-year, historical fills would need
 rate-versioning by date — noted, not built.
+
+
+## Implementation notes (2026-09-14)
+
+The remainder of 2a and 2b is implemented in migration 0008 and the paper,
+market-data and backtest modules. The cash ledger is append-only at the DB
+level; account locks serialize fills, resets and settlement. Paper read paths
+use it directly. Positive legacy CNC positions migrate as pending for one
+session; negative legacy CNC inventory requires a reset before upgrade.
+
+The backtest UI/API exposes registered SMA crossover. The engine reuses the
+strategy interface but explicitly rejects async/AI replay, short entries and
+reversals. AI replay needs historical context and recorded decisions; silently
+using today's LLM context would not be a historical test. Model limits also
+include no MIS session-close square-off, historical charge-rate versioning,
+corporate-action handling or liquidity model. The existing paper plan retains
+zero brokerage plus statutory/DP charges. Every result records these limits,
+its source and a hash of the candles used. See README for commands and routes.
+
+The rates in the original design table above were superseded by the verified
+charges implementation and `engines/paper/rates.py`; that module remains the
+source of truth. The original holiday verification caveats remain open.

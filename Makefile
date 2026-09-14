@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate makemigration seed bootstrap-admin test lint fmt psql redis api-shell reset-db
+.PHONY: setup up down logs migrate makemigration seed bootstrap-admin test test-integration lint fmt psql redis api-shell reset-db
 
 setup: ## copy env file
 	cp -n .env.example .env || true
@@ -29,6 +29,16 @@ bootstrap-admin:
 
 test:
 	docker compose exec api pytest -q
+
+# The Postgres integration tests (concurrent fills, settlement, ledger
+# invariants) SKIP without a database, and they cover the code most likely to
+# corrupt money. This runs them against the compose Postgres on a throwaway
+# database so a green suite means what it looks like it means.
+test-integration:
+	docker compose exec -T db psql -U trader -c "DROP DATABASE IF EXISTS trader_test" postgres
+	docker compose exec -T db psql -U trader -c "CREATE DATABASE trader_test" postgres
+	docker compose exec -e DATABASE_URL=postgresql+asyncpg://trader:trader@db:5432/trader_test api alembic upgrade head
+	docker compose exec -e TEST_DATABASE_URL=postgresql+asyncpg://trader:trader@db:5432/trader_test api pytest -q
 
 lint:
 	docker compose exec api ruff check app tests

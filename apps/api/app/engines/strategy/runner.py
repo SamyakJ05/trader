@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.db.models import BrokerAccount, Position, Strategy, TradingSignal
+from app.db.models import BrokerAccount, Position, Strategy, TradingSignal, PaperHolding
 from app.domain.enums import (
     AuditEventType,
     Exchange,
@@ -23,6 +23,7 @@ from app.domain.enums import (
 )
 from app.domain.models import OrderRequest
 from app.engines.paper import market_sim
+from app.engines.market.candles import history as candle_history
 from app.engines.strategy.ai_agent import AiAgentStrategy
 from app.engines.strategy.base import AsyncStrategyBase, Signal, StrategyBase, StrategyContext
 from app.engines.strategy.sma_crossover import SmaCrossover
@@ -44,14 +45,31 @@ _SIGNAL_SIDE = {
 }
 
 
-async def _position_quantity(db: AsyncSession, account_id: uuid.UUID, symbol: str) -> int:
+async def _position_quantity(
+    db: AsyncSession, account_id: uuid.UUID, symbol: str, exchange="NSE", product="MIS"
+) -> int:
     result = await db.execute(
         select(Position).where(
-            Position.broker_account_id == account_id, Position.symbol == symbol
+            Position.broker_account_id == account_id,
+            Position.symbol == symbol,
+            Position.exchange == exchange,
+            Position.product == product,
         )
     )
     position = result.scalar_one_or_none()
-    return position.quantity if position else 0
+    quantity = position.quantity if position else 0
+    if product == "CNC":
+        holding = (
+            await db.execute(
+                select(PaperHolding).where(
+                    PaperHolding.broker_account_id == account_id,
+                    PaperHolding.symbol == symbol,
+                    PaperHolding.exchange == exchange,
+                )
+            )
+        ).scalar_one_or_none()
+        quantity += holding.quantity if holding else 0
+    return quantity
 
 
 async def _act_on_signal(
@@ -114,6 +132,19 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
     emitted = 0
 
     for strategy in strategies:
+        strategy = (
+            await db.execute(
+                select(Strategy)
+                .where(
+                    Strategy.id == strategy.id,
+                    Strategy.status == StrategyStatus.RUNNING.value,
+                )
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if strategy is None:
+            continue
         if await killswitch.is_strategy_engaged(redis, strategy.id):
             continue
         impl = STRATEGY_REGISTRY.get(strategy.kind)
@@ -128,15 +159,35 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
 
         for symbol in strategy.symbols:
             await market_sim.get_price(redis, symbol)  # ensure tracked by the feed
-            history = await market_sim.get_history(
-                redis, symbol, impl.min_history(strategy.params)
+            candles = await candle_history(
+                db,
+                symbol,
+                strategy.params.get("exchange", "NSE"),
+                strategy.params.get("interval", "1m"),
+                strategy.params.get("source", "simulator"),
+                impl.min_history(strategy.params),
             )
+            history = [candle.close for candle in candles]
             if len(history) < impl.min_history(strategy.params):
                 continue
+            # Persist a per-symbol cursor in the strategy transaction. Restarting
+            # a worker must not repeatedly trade the same completed candle.
+            cursor = dict(strategy.params.get("_candle_cursors", {}))
+            stamp = candles[-1].ts.isoformat()
+            if cursor.get(symbol) == stamp:
+                continue
+            cursor[symbol] = stamp
+            strategy.params = {**strategy.params, "_candle_cursors": cursor}
             ctx = StrategyContext(
                 symbol=symbol,
                 prices=history,
-                position_quantity=await _position_quantity(db, account.id, symbol),
+                position_quantity=await _position_quantity(
+                    db,
+                    account.id,
+                    symbol,
+                    strategy.params.get("exchange", "NSE"),
+                    strategy.params.get("product", "MIS"),
+                ),
                 # _strategy_id/_user_id let async strategies (ai_agent) resolve
                 # their LLM config and rate-limit keys without schema changes.
                 params={
@@ -171,4 +222,5 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
                     strategy.status = StrategyStatus.ERROR.value
                     await db.commit()
                     break
+    await db.commit()
     return emitted

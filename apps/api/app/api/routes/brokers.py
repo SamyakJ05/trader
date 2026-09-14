@@ -11,7 +11,7 @@ from app.adapters.registry import get_adapter
 from app.adapters.zerodha.adapter import ZerodhaAdapter
 from app.core.config import get_settings
 from app.core.deps import DbSession, VerifiedUser
-from app.db.models import BrokerAccount
+from app.db.models import BrokerAccount, CashLedger
 from app.domain.capabilities import CAPABILITY_MATRIX
 from app.domain.enums import AuditEventType, Broker, Environment
 from app.services import audit
@@ -111,6 +111,17 @@ async def delete_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSessio
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
+    if account.environment == "paper":
+        from app.engines.paper.ledger import lock_account
+
+        await lock_account(db, account.id)
+        exists = (
+            await db.execute(
+                select(CashLedger.id).where(CashLedger.broker_account_id == account.id).limit(1)
+            )
+        ).scalar_one_or_none()
+        if exists is not None:
+            raise HTTPException(409, "Account has immutable cash history; disconnect it instead")
     await db.delete(account)
     await audit.emit(
         db,

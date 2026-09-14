@@ -8,12 +8,13 @@
 - [x] `ai_agent` strategy kind (interval + daily-cap guards, audited decisions)
 
 ## Phase A — harden the paper core (now)
-- [ ] Integration tests for the order pipeline (testcontainers: pg + redis)
-- [ ] Paper holdings model (T+1 settlement of CNC fills into holdings)
-- [ ] Real charges engine: brokerage per broker plan, STT/CTT, exchange txn,
+- [x] Postgres integration tests for ledger, settlement, concurrent fills and isolation
+- [ ] Full order-pipeline integration against real Redis (current tests use fakeredis)
+- [x] Paper holdings model (T+1 settlement of CNC fills into holdings)
+- [x] Equity charges engine: brokerage per broker plan, STT, exchange txn,
       SEBI, stamp duty, GST — make paper P&L honest
-- [ ] Exchange holiday calendar for the market-hours guard
-- [ ] Per-account paper cash as a proper ledger (credits/debits table) instead
+- [x] Exchange holiday calendar for the market-hours guard
+- [x] Per-account paper cash as a proper ledger (credits/debits table) instead
       of latest-snapshot arithmetic
 
 ## Phase B — first real broker (Zerodha)
@@ -32,8 +33,9 @@
 - [ ] Per-broker symbol mapping table (same instrument, different tokens/codes)
 
 ## Phase D — strategy platform
-- [ ] Candle aggregation (1m/5m) from ticks instead of raw tick SMA
-- [ ] Strategy backtester over stored candles
+- [x] Candle aggregation (1m/5m) from ticks instead of raw tick SMA
+- [x] SMA crossover backtester over stored candles (next-open fills, saved results)
+- [x] Historical NSE import via yfinance (daily/1m/5m)
 - [ ] Strategy run lifecycle (strategy_runs populated, stats, error surfacing)
 - [ ] Position sizing + per-strategy capital allocation
 - [ ] More strategies (momentum, mean reversion) via the registry

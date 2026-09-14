@@ -20,14 +20,14 @@ apps/api   FastAPI (Python 3.12)
     groww/           SCAFFOLD — token auth wired, paths need verification
     icici_breeze/    SCAFFOLD — request-signing (checksum) auth wired
   app/engines/
-    paper/           fill simulation, partial fills, positions, P&L, charges hook
+    paper/           fill simulation, partial fills, positions, P&L, charges and settlement
     risk/            pre-trade checks, kill switches, market-hours guard
     strategy/        strategy base + SMA crossover example + runner
   app/services/      order pipeline (idempotency -> audit -> risk -> dispatch),
                      broker lifecycle, audit emitter, kill switch
   app/api/routes/    REST surface (OpenAPI at /docs)
   app/workers/       arq jobs: price tick -> fills -> mark-to-market -> strategies
-Postgres             system of record (18 tables, Alembic migrations)
+Postgres             system of record (Alembic migrations)
 Redis                sim prices, kill switches, cooldowns, job queue
 ```
 
@@ -99,7 +99,12 @@ fallback. Without a provider the rest of the app works unchanged.
 - Local auth (register/login/logout, DB-backed sessions)
 - Multi-account broker connection records with status + last-sync
 - Paper trading: market/limit/SL/SL-M orders, fills, partial fills, cancels,
-  modify, positions, realized/unrealized P&L, virtual cash, account reset
+  modify, positions, net realized/unrealized P&L, append-only cash ledger, account reset
+- Equity statutory charges and broker-specific brokerage plans; paper accounts
+  use zero brokerage (statutory charges and delivery DP charges still apply)
+- CNC holdings with T+1 settlement across the checked-in NSE calendar
+- Persistent 1m/5m candles, Yahoo historical import, SMA crossover backtests
+  with next-open fills, saved metrics and an equity curve at `/backtests`
 - Risk engine: max daily loss, max order notional, max position size, max open
   positions, duplicate-order cooldown, market-hours guard
 - Global + per-strategy kill switches (Redis-backed, audited, UI-controlled)
@@ -129,9 +134,8 @@ fallback. Without a provider the rest of the app works unchanged.
   client-side throttling not yet implemented.
 - Zerodha postback webhook: stores + audits events; checksum validation and
   order reconciliation are TODO.
-- Charges engine: placeholder hook returning 0 (real brokerage/STT/GST stack
-  is TODO).
-- Holdings model for paper (positions only today).
+- Historical AI replay: not supported without historical context and recorded decisions.
+  The backtest API currently exposes the registered SMA crossover strategy.
 
 The capability matrix in `apps/api/app/domain/capabilities.py` is the single
 source of truth and distinguishes *what the broker supports* from *what our
@@ -363,3 +367,79 @@ from `apps/api` so pytest picks up the asyncio config). The suite is pure-unit
 ## Roadmap
 
 See [docs/ROADMAP.md](docs/ROADMAP.md).
+
+
+## Phase 2: ledger, settlement and backtests
+
+Apply migration **0008** (`make migrate`) before restarting API and workers.
+It creates `cash_ledger`, `holdings`, `pending_settlements`, `candles`, and
+`backtest_runs`. Existing paper cash carries forward from the latest funds
+snapshot. Legacy positive CNC inventory waits one session from migration,
+since it has no reliable settlement provenance; legacy CNC shorts must be
+reset before upgrading. New CNC fills settle on the next NSE trading day.
+Unknown calendar years fail explicitly, including late-2026 buys requiring
+2027 settlement. The existing holiday-source verification caveat still applies.
+
+Cash movements and inventory changes serialize on an account row lock. Ledger
+updates/deletes are rejected by Postgres. Resets append offset and opening
+entries, cancel working orders and pending settlements, and clear inventory;
+order/fill history remains. Accounts with ledger history cannot be deleted;
+disconnect them instead. `GET /portfolio/ledger?account_id=...` returns the
+latest 100 entries; paginate with `before_id`. Paper funds on the dashboard,
+portfolio, adapter and AI tool all read this ledger. Realized P&L includes
+charges; cash includes both trade principal and charges.
+
+The Positions page separates pending CNC positions from settled delivery
+holdings. Settled inventory counts toward risk limits and strategy positions.
+A delivery sale cannot consume unsettled stock. Settlement runs on worker
+ticks and before fill attempts, using IST dates and T+1 sessions.
+
+Strategies now evaluate completed candles (default `interval=1m`,
+`source=simulator`), once per symbol/bar. Missing minutes stay missing; 5m
+rollups require five distinct 1m candles. Price-only simulated ticks have
+unknown volume. Raw tick SMA history is no longer the strategy input, so
+new installations need enough completed candles to warm up.
+
+Install the optional importer dependency and download history:
+
+```bash
+cd apps/api
+uv pip install -e '.[dev,history]'
+python -m app.cli.import_history --symbol RELIANCE --interval 1d \
+  --start 2025-01-01 --end 2026-01-01
+```
+
+`--end` is exclusive; intervals are `1m`, `5m`, and `1d`. Imports validate the
+whole download before writing, refuse malformed OHLCV/timestamps, skip
+unfinished bars and upsert atomically. Yahoo and simulator rows have separate
+source keys, so a reimport cannot overwrite simulated candles.
+[yfinance](https://ranaroussi.github.io/yfinance/reference/api/yfinance.download.html)
+is an unofficial Yahoo client; availability and intraday retention are limited
+and requests can fail. Its documentation describes personal use. Review data
+rights before offering imported data to others. We explicitly import
+unadjusted OHLC; splits, dividends and other corporate actions are not modeled.
+
+Open **Backtests** to run the SMA crossover against one symbol/source/range.
+`POST /backtests` stores the configuration, candle-data hash, metrics and
+curve; `GET /backtests` and `GET /backtests/{id}` return only your own runs.
+Ranges are capped at 100,000 completed bars. A signal fills at the *next stored
+bar's open*, never its own close. The final signal remains unfilled without a
+next bar. Win rate counts closed round trips after charges. Open inventory is
+marked to the last close. CNC uses the same settlement calendar and charges.
+
+Limits are displayed with every result: long-only, no additional slippage,
+market impact, liquidity or circuit breakers; no automatic MIS end-of-session
+square-off; current charge rates across all historical dates; the paper plan's
+zero brokerage. These results are a constrained simulator, not a broker P&L
+reconciliation. AI/async strategies require recorded historical decisions and
+are explicitly refused by the replay engine.
+
+Postgres transaction tests are opt-in against a **disposable, migrated** DB:
+
+```bash
+cd apps/api
+DEBUG=false TEST_DATABASE_URL=postgresql+asyncpg://user@localhost/test_db pytest -q
+```
+
+Without `TEST_DATABASE_URL`, these tests skip and the pure-unit suite runs.
+History normalization tests require the optional history dependencies.

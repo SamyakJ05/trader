@@ -19,6 +19,13 @@ LIMITATIONS = [
     "The paper brokerage plan charges zero brokerage; statutory and delivery DP charges apply.",
     "Unadjusted Yahoo data does not model splits, dividends or other corporate actions.",
     "Open positions are marked at the last close, not forcibly liquidated.",
+    "The final bar's signal is dropped: there is no later bar to fill it at.",
+    "Backtest accounting uses one average-cost ledger; the live engine keeps "
+    "separate position and settled-holding averages, so delivery P&L can differ.",
+    "5m candles are dropped, never part-formed, when a 1m bar is missing from "
+    "the bucket -- so gaps appear rather than fabricated prices.",
+    "A zero-P&L round trip counts as a loss in win rate and is invisible to "
+    "profit factor.",
     "AI strategies cannot be replayed without historical context and recorded decisions.",
 ]
 
@@ -178,6 +185,11 @@ def run_backtest(
         rejected_signals=rejected,
         equity_curve=curve,
         fills=fills,
+        # The final bar's decision has no next bar to fill against, so it is
+        # dropped rather than executed. Reported so a reader comparing trade
+        # counts against the strategy's own logic can see why one fewer fired,
+        # instead of silently wondering.
+        unfilled_final_signals=len(pending),
         limitations=LIMITATIONS,
         # Return and win rate alone cannot distinguish a steady climb from a
         # violent one, nor a high win rate that loses money.

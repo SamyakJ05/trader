@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     admin,
+    backtests,
     ai,
     audit_log,
     auth,
@@ -28,3 +29,5 @@ api_router.include_router(risk.router)
 api_router.include_router(audit_log.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(system.router)
+
+api_router.include_router(backtests.router)

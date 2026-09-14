@@ -22,7 +22,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BrokerAccount, Fill, FundsSnapshot, Order, Position
+from app.db.models import BrokerAccount, Fill, Order, Position, PaperHolding, PendingSettlement
 from app.domain.enums import (
     AuditEventType,
     Broker,
@@ -31,7 +31,9 @@ from app.domain.enums import (
     OrderType,
     ProductType,
 )
-from app.engines.paper import market_sim
+from app.engines.paper import market_sim, ledger, settlement
+from app.engines.paper.ledger import get_cash
+from app.domain.calendar import IST, settlement_date, CalendarUnavailable
 from app.engines.paper.charges import compute_charges
 from app.engines.paper.pnl import apply_fill
 from app.services import audit, daily_pnl
@@ -60,9 +62,7 @@ def _fill_price(order: Order, market_price: Decimal) -> Decimal | None:
     trigger = order.trigger_price
 
     if otype in (OrderType.SL.value, OrderType.SL_M.value):
-        armed = (
-            market_price >= trigger if side == OrderSide.BUY.value else market_price <= trigger
-        )
+        armed = market_price >= trigger if side == OrderSide.BUY.value else market_price <= trigger
         if not armed:
             return None
         if otype == OrderType.SL_M.value:
@@ -80,32 +80,19 @@ def _fill_price(order: Order, market_price: Decimal) -> Decimal | None:
     return None
 
 
-async def get_cash(db: AsyncSession, account_id: uuid.UUID) -> Decimal:
-    result = await db.execute(
-        select(FundsSnapshot)
-        .where(FundsSnapshot.broker_account_id == account_id)
-        .order_by(FundsSnapshot.ts.desc())
-        .limit(1)
-    )
-    snap = result.scalar_one_or_none()
-    return snap.available_cash if snap else INITIAL_PAPER_CASH
-
-
-async def set_cash(db: AsyncSession, account_id: uuid.UUID, cash: Decimal) -> None:
-    db.add(FundsSnapshot(broker_account_id=account_id, available_cash=cash, payload={}))
-
-
 async def _apply_fill_to_position(
     db: AsyncSession, order: Order, fill_qty: int, fill_price: Decimal
 ) -> tuple[Position, Decimal]:
     """Returns the position and the realized-P&L delta this fill produced."""
     result = await db.execute(
-        select(Position).where(
+        select(Position)
+        .where(
             Position.broker_account_id == order.broker_account_id,
             Position.symbol == order.symbol,
             Position.exchange == order.exchange,
             Position.product == order.product,
         )
+        .execution_options(populate_existing=True)
     )
     position = result.scalar_one_or_none()
     if position is None:
@@ -140,7 +127,7 @@ async def _first_delivery_sell_of_day(db: AsyncSession, order: Order) -> bool:
     """
     if order.product != ProductType.CNC.value or order.side != OrderSide.SELL.value:
         return False
-    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = datetime.now(IST).replace(hour=0, minute=0, second=0, microsecond=0)
     result = await db.execute(
         select(Fill)
         .join(Order, Fill.order_id == Order.id)
@@ -158,7 +145,7 @@ async def _first_delivery_sell_of_day(db: AsyncSession, order: Order) -> bool:
 
 async def _execute_fill(
     db: AsyncSession, redis: aioredis.Redis, order: Order, fill_qty: int, fill_price: Decimal
-) -> None:
+) -> bool:
     account = await db.get(BrokerAccount, order.broker_account_id)
     breakdown = compute_charges(
         broker=account.broker if account else Broker.PAPER,
@@ -170,7 +157,42 @@ async def _execute_fill(
         is_first_sell_of_scrip_today=await _first_delivery_sell_of_day(db, order),
     )
     charges = breakdown.total
-    db.add(Fill(order_id=order.id, quantity=fill_qty, price=fill_price, charges=charges))
+    cash = await get_cash(db, order.broker_account_id)
+    holding = None
+    due = None
+    reason = None
+    if order.side == "BUY" and cash < ledger.money(fill_price * fill_qty) + charges:
+        reason = "Insufficient paper cash including charges"
+    if order.product == "CNC":
+        if order.side == "BUY":
+            try:
+                due = settlement_date(datetime.now(IST).date())
+            except CalendarUnavailable as exc:
+                reason = str(exc)
+        else:
+            holding = await settlement.get_holding(
+                db, order.broker_account_id, order.symbol, order.exchange
+            )
+            if holding is None or holding.quantity < fill_qty:
+                reason = "Insufficient settled holdings; unsettled delivery cannot be sold"
+    if reason:
+        old = order.status
+        order.status = OrderStatus.REJECTED.value
+        order.status_message = reason
+        await audit.emit(
+            db,
+            AuditEventType.ORDER_STATE_CHANGED,
+            user_id=order.user_id,
+            entity_type="order",
+            entity_id=order.id,
+            payload={"from": old, "to": order.status, "reason": reason},
+        )
+        return False
+    fill = Fill(
+        id=uuid.uuid4(), order_id=order.id, quantity=fill_qty, price=fill_price, charges=charges
+    )
+    db.add(fill)
+    await db.flush()
 
     prev_filled = order.filled_quantity or 0
     prev_avg = order.average_fill_price or Decimal("0")
@@ -186,14 +208,41 @@ async def _execute_fill(
         else OrderStatus.PARTIALLY_FILLED.value
     )
 
-    _, realized_delta = await _apply_fill_to_position(db, order, fill_qty, fill_price)
+    if holding is not None:
+        realized_delta = (fill_price - holding.average_price) * fill_qty
+        # Preserve cumulative realized P&L after inventory leaves positions.
+        position, _ = await _apply_fill_to_position(db, order, 0, fill_price)
+        position.realized_pnl += realized_delta
+        holding.quantity -= fill_qty
+        if holding.quantity == 0:
+            holding.average_price = Decimal("0")
+    else:
+        position, realized_delta = await _apply_fill_to_position(db, order, fill_qty, fill_price)
+    position.realized_pnl -= charges
+    if due is not None:
+        db.add(
+            PendingSettlement(
+                broker_account_id=order.broker_account_id,
+                fill_id=fill.id,
+                symbol=order.symbol,
+                exchange=order.exchange,
+                quantity=fill_qty,
+                price=fill_price,
+                settles_on=due,
+            )
+        )
     # Feed the MAX_DAILY_LOSS rule: per-day realized counter in Redis.
-    await daily_pnl.add_realized(redis, order.user_id, order.environment, realized_delta)
+    await daily_pnl.add_realized(redis, order.user_id, order.environment, realized_delta - charges)
 
     notional = fill_price * fill_qty
-    cash = await get_cash(db, order.broker_account_id)
-    cash = cash - notional - charges if order.side == OrderSide.BUY.value else cash + notional - charges
-    await set_cash(db, order.broker_account_id, cash)
+    await ledger.append(
+        db,
+        order.broker_account_id,
+        order.side,
+        -notional if order.side == "BUY" else notional,
+        fill_id=fill.id,
+    )
+    await ledger.append(db, order.broker_account_id, "CHARGES", -charges, fill_id=fill.id)
 
     await audit.emit(
         db,
@@ -221,9 +270,16 @@ async def _execute_fill(
         payload={"from": old_status, "to": order.status},
     )
 
+    return True
+
 
 async def try_fill_order(db: AsyncSession, redis: aioredis.Redis, order: Order) -> bool:
     """Attempt one fill pass for a single order. Returns True if filled (any amount)."""
+    await ledger.lock_account(db, order.broker_account_id)
+    await db.refresh(order)
+    if order.status not in _WORKING:
+        return False
+    await settlement.settle_account(db, order.broker_account_id)
     if order.status == OrderStatus.ACCEPTED.value:
         old = order.status
         order.status = OrderStatus.OPEN.value
@@ -249,14 +305,15 @@ async def try_fill_order(db: AsyncSession, redis: aioredis.Redis, order: Order) 
     if remaining > 1 and random.random() < PARTIAL_FILL_P:
         fill_qty = max(1, remaining // 2)
 
-    await _execute_fill(db, redis, order, fill_qty, fill_price)
-    return True
+    return await _execute_fill(db, redis, order, fill_qty, fill_price)
 
 
 async def process_open_orders(db: AsyncSession, redis: aioredis.Redis) -> int:
     """Worker tick: advance fills for every working paper order."""
     result = await db.execute(
-        select(Order).where(Order.environment == "paper", Order.status.in_(_WORKING))
+        select(Order)
+        .where(Order.environment == "paper", Order.status.in_(_WORKING))
+        .order_by(Order.broker_account_id, Order.id)
     )
     orders = result.scalars().all()
     filled = 0
@@ -276,6 +333,8 @@ async def mark_positions(db: AsyncSession, redis: aioredis.Redis) -> None:
 
 
 async def cancel_order(db: AsyncSession, order: Order) -> None:
+    await ledger.lock_account(db, order.broker_account_id)
+    await db.refresh(order)
     if OrderStatus(order.status).is_terminal:
         raise ValueError(f"Order already terminal: {order.status}")
     old = order.status
@@ -295,17 +354,28 @@ async def reset_account(db: AsyncSession, account: BrokerAccount) -> None:
     """Wipe paper positions and restore initial cash. Order/fill/audit history
     is kept, but working orders are cancelled first — otherwise they would
     keep filling into the freshly reset account."""
+    await ledger.lock_account(db, account.id)
     result = await db.execute(
-        select(Order).where(
-            Order.broker_account_id == account.id, Order.status.in_(_WORKING)
-        )
+        select(Order).where(Order.broker_account_id == account.id, Order.status.in_(_WORKING))
     )
     for order in result.scalars():
         await cancel_order(db, order)
 
-    result = await db.execute(
-        select(Position).where(Position.broker_account_id == account.id)
-    )
+    result = await db.execute(select(Position).where(Position.broker_account_id == account.id))
     for position in result.scalars():
         await db.delete(position)
-    await set_cash(db, account.id, INITIAL_PAPER_CASH)
+    for holding in (
+        await db.execute(select(PaperHolding).where(PaperHolding.broker_account_id == account.id))
+    ).scalars():
+        await db.delete(holding)
+    for pending in (
+        await db.execute(
+            select(PendingSettlement).where(
+                PendingSettlement.broker_account_id == account.id,
+                PendingSettlement.settled_at.is_(None),
+                PendingSettlement.cancelled_at.is_(None),
+            )
+        )
+    ).scalars():
+        pending.cancelled_at = datetime.now(timezone.utc)
+    await ledger.reset(db, account.id)

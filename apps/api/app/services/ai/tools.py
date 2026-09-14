@@ -159,9 +159,7 @@ async def run_tool(
 ) -> str:
     """Execute one analyst tool and return a JSON string for the model."""
     if name == "get_positions":
-        result = await db.execute(
-            select(Position).where(Position.broker_account_id == account.id)
-        )
+        result = await db.execute(select(Position).where(Position.broker_account_id == account.id))
         return json.dumps(
             [
                 {
@@ -201,6 +199,12 @@ async def run_tool(
         )
 
     if name == "get_funds":
+        if account.environment == "paper":
+            from app.engines.paper.ledger import get_cash
+
+            return json.dumps(
+                {"available_cash": str(await get_cash(db, account.id)), "source": "cash_ledger"}
+            )
         result = await db.execute(
             select(FundsSnapshot)
             .where(FundsSnapshot.broker_account_id == account.id)
@@ -210,7 +214,9 @@ async def run_tool(
         snap = result.scalar_one_or_none()
         if snap is None:
             return json.dumps({"available_cash": None, "note": "no funds snapshot yet"})
-        return json.dumps({"available_cash": str(snap.available_cash), "as_of": snap.ts.isoformat()})
+        return json.dumps(
+            {"available_cash": str(snap.available_cash), "as_of": snap.ts.isoformat()}
+        )
 
     if name == "get_quotes":
         symbols = [str(s).strip().upper() for s in args.get("symbols", []) if str(s).strip()]
