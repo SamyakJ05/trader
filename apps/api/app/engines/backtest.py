@@ -2,7 +2,7 @@
 
 from decimal import Decimal
 
-from app.domain.calendar import IST, settlement_date
+from app.domain.calendar import IST, is_intraday_square_off_due, settlement_date
 from app.domain.enums import Broker, OrderSide, ProductType, SignalType
 from app.engines.paper.charges import compute_charges
 from app.engines.metrics import summarise as summarise_metrics
@@ -14,7 +14,8 @@ LIMITATIONS = [
     "Fills use the next stored candle open; missing bars are not synthesized.",
     "No additional slippage, market impact, liquidity limits or circuit breakers.",
     "Current charge rates apply to all dates; historical rate changes are not modeled.",
-    "MIS positions are not automatically squared off at session close.",
+    "MIS positions are squared off at the broker cutoff (15:20 IST) or, when "
+    "no bar reaches it, at the next day's open -- not at an exact 15:20 price.",
     "Long-only; short entries and reversals are rejected because margin is not modeled.",
     "The paper brokerage plan charges zero brokerage; statutory and delivery DP charges apply.",
     "Unadjusted Yahoo data does not model splits, dividends or other corporate actions.",
@@ -79,8 +80,52 @@ def run_backtest(
     # the bars actually holding a position, so a return earned while mostly in
     # cash is not mistaken for a fully invested one.
     trade_pnls, exposure_bars = [], 0
+    squared_off = 0
+    previous_day = None
     for bar in candles:
         day = bar.ts.astimezone(IST).date()
+        # Force-close an intraday position that the broker would have squared
+        # off: at the cutoff on the same day, or -- if the data has no bar at
+        # or after the cutoff -- on the first bar of the next day, using that
+        # day's open. Holding MIS overnight models a product that does not
+        # exist, and a backtest that does so reports gains no one could take.
+        if product == ProductType.MIS and quantity > 0:
+            crossed_cutoff = is_intraday_square_off_due(bar.ts)
+            new_day = previous_day is not None and day != previous_day
+            if crossed_cutoff or new_day:
+                qty = quantity
+                cost = compute_charges(
+                    broker=Broker.PAPER,
+                    side=OrderSide.SELL,
+                    product=product,
+                    quantity=qty,
+                    price=bar.open,
+                    exchange=exchange,
+                ).total
+                notional = money(bar.open * qty)
+                before = realized
+                quantity, average, realized = apply_fill(
+                    quantity, average, realized, -qty, bar.open
+                )
+                cash += notional - cost
+                charges_total += cost
+                roundtrip_pnl += realized - before - cost
+                squared_off += 1
+                trades += 1
+                wins += roundtrip_pnl > 0
+                trade_pnls.append(roundtrip_pnl)
+                roundtrip_pnl = Decimal(0)
+                fills.append(
+                    dict(
+                        ts=bar.ts.isoformat(),
+                        side=OrderSide.SELL.value,
+                        quantity=qty,
+                        price=str(bar.open),
+                        charges=str(cost),
+                        square_off=True,
+                    )
+                )
+        previous_day = day
         for due, qty in settlements[:]:
             if due <= day:
                 settled += qty
@@ -104,6 +149,15 @@ def run_backtest(
                 valid = False
             if product == ProductType.CNC and side == OrderSide.SELL:
                 valid &= qty <= settled
+            # No new intraday entry once the broker's square-off window has
+            # opened: it would be closed again immediately, and a backtest that
+            # allowed it would book a trade the market would never have given.
+            if (
+                product == ProductType.MIS
+                and side == OrderSide.BUY
+                and is_intraday_square_off_due(bar.ts)
+            ):
+                valid = False
             if not valid:
                 rejected += 1
                 continue
@@ -190,6 +244,9 @@ def run_backtest(
         # counts against the strategy's own logic can see why one fewer fired,
         # instead of silently wondering.
         unfilled_final_signals=len(pending),
+        # Intraday positions the broker would have force-closed. A strategy
+        # relying on overnight holds shows up here rather than in the return.
+        square_offs=squared_off,
         limitations=LIMITATIONS,
         # Return and win rate alone cannot distinguish a steady climb from a
         # violent one, nor a high win rate that loses money.

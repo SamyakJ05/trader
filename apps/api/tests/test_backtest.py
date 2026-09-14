@@ -127,3 +127,116 @@ def test_dp_charge_is_counted_once_per_day_across_a_multi_day_backtest():
         initial_cash=D("100000"),
     )
     assert result["fill_count"] >= 1
+
+
+class BuyAndHold(StrategyBase):
+    """Enters once and never exits, so only a forced square-off can close it."""
+
+    kind = "buy_and_hold"
+
+    def min_history(self, params):
+        return 1
+
+    def evaluate(self, ctx):
+        if ctx.position_quantity == 0:
+            return [Signal(symbol=ctx.symbol, quantity=1, signal_type=SignalType.ENTRY_LONG)]
+        return []
+
+
+def session_bars(start_ist, opens, closes, step_minutes=1):
+    """Bars at a chosen IST time, so square-off behaviour can be exercised."""
+    from app.domain.calendar import IST as ist_tz
+
+    return [
+        SimpleNamespace(
+            ts=(start_ist + timedelta(minutes=i * step_minutes)).replace(tzinfo=ist_tz),
+            open=D(o),
+            close=D(c),
+            high=max(D(o), D(c)),
+            low=min(D(o), D(c)),
+            volume=100,
+        )
+        for i, (o, c) in enumerate(zip(opens, closes))
+    ]
+
+
+def test_mis_position_is_squared_off_at_the_broker_cutoff():
+    """Holding MIS past 15:20 is not something a broker permits. A backtest
+    that allows it reports gains nobody could have taken."""
+    start = datetime(2026, 9, 16, 15, 17)
+    result = run_backtest(
+        BuyAndHold(),
+        session_bars(start, [100, 101, 102, 103, 104], [101, 102, 103, 104, 105]),
+        symbol="RELIANCE",
+        product="MIS",
+        initial_cash=D("100000"),
+    )
+    assert result["square_offs"] == 1
+    assert result["open_quantity"] == 0, "no MIS position may survive the session"
+    assert any(f.get("square_off") for f in result["fills"])
+
+
+def test_mis_is_squared_off_at_the_next_open_when_no_bar_reaches_the_cutoff():
+    """Daily bars never carry a 15:20 timestamp. The position must still close
+    rather than silently rolling overnight."""
+    start = datetime(2026, 9, 16, 10, 0)
+    bars_two_days = session_bars(start, [100, 101], [101, 102])
+    bars_two_days += session_bars(
+        datetime(2026, 9, 17, 10, 0), [103, 104], [104, 105]
+    )
+    result = run_backtest(
+        BuyAndHold(),
+        bars_two_days,
+        symbol="RELIANCE",
+        product="MIS",
+        initial_cash=D("100000"),
+    )
+    assert result["square_offs"] >= 1
+    # The forced exit lands on day two's first bar, before the strategy is
+    # free to re-enter that day -- so a position at the end is expected; what
+    # matters is that nothing was carried ACROSS the night.
+    forced = [f for f in result["fills"] if f.get("square_off")]
+    assert forced and forced[0]["ts"].startswith("2026-09-17")
+
+
+def test_cnc_positions_are_not_squared_off():
+    """Delivery is meant to be held; only intraday is force-closed."""
+    start = datetime(2026, 9, 16, 15, 17)
+    result = run_backtest(
+        BuyAndHold(),
+        session_bars(start, [100, 101, 102, 103, 104], [101, 102, 103, 104, 105]),
+        symbol="RELIANCE",
+        product="CNC",
+        initial_cash=D("100000"),
+    )
+    assert result["square_offs"] == 0
+    assert result["open_quantity"] > 0
+
+
+def test_square_off_charges_the_sell_leg():
+    """A forced exit is a real sell: STT and the rest apply."""
+    start = datetime(2026, 9, 16, 15, 17)
+    result = run_backtest(
+        BuyAndHold(),
+        session_bars(start, [100, 101, 102, 103, 104], [101, 102, 103, 104, 105]),
+        symbol="RELIANCE",
+        product="MIS",
+        initial_cash=D("100000"),
+    )
+    forced = [f for f in result["fills"] if f.get("square_off")]
+    assert forced and D(forced[0]["charges"]) > 0
+
+
+def test_no_new_intraday_entry_after_the_square_off_window_opens():
+    """A broker will not open an MIS position at 15:25 that it must close
+    minutes later. Allowing it would book trades the market never offered."""
+    start = datetime(2026, 9, 16, 15, 22)
+    result = run_backtest(
+        BuyAndHold(),
+        session_bars(start, [100, 101, 102], [101, 102, 103]),
+        symbol="RELIANCE",
+        product="MIS",
+        initial_cash=D("100000"),
+    )
+    assert result["fill_count"] == 0
+    assert result["rejected_signals"] > 0

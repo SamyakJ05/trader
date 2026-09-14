@@ -12,6 +12,10 @@ from app.domain.data.nse_holidays import NSE_HOLIDAYS
 IST = timezone(timedelta(hours=5, minutes=30))
 NSE_OPEN = time(9, 15)
 NSE_CLOSE = time(15, 30)
+# Brokers force-close open intraday positions before the session ends rather
+# than at the bell; Zerodha's equity cutoff is 15:20. A backtest that holds MIS
+# overnight is modelling a product that does not exist.
+MIS_SQUARE_OFF = time(15, 20)
 
 
 class CalendarUnavailable(RuntimeError):
@@ -61,6 +65,11 @@ def next_trading_day(day: date, *, offset: int = 1) -> date:
 def settlement_date(trade_day: date) -> date:
     """T+1 settlement for equity delivery."""
     return next_trading_day(trade_day, offset=1)
+
+
+def is_intraday_square_off_due(moment: datetime) -> bool:
+    """Whether an open MIS position would have been force-closed by now."""
+    return moment.astimezone(IST).time() >= MIS_SQUARE_OFF
 
 
 def is_market_open(now: datetime | None = None) -> bool:
