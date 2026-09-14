@@ -77,6 +77,15 @@ async def place_order(
     client_order_id: str,
     strategy_id: uuid.UUID | None = None,
 ) -> Order:
+    # Step 1 of the pipeline, enforced here rather than trusted from callers:
+    # the account must belong to the user the order is being placed for.
+    # Callers verify ownership when they resolve the account; this is the
+    # backstop that makes a missed check at any call site non-exploitable.
+    if account.user_id != user_id:
+        raise OrderServiceError(
+            "Broker account does not belong to this user — order refused"
+        )
+
     # Idempotent replay: same client_order_id returns the original order.
     existing = await _existing_order(db, account.id, client_order_id)
     if existing is not None:
@@ -225,6 +234,8 @@ async def _place_order_unchecked(
 async def cancel_order(
     db: AsyncSession, redis: aioredis.Redis, *, user_id: uuid.UUID, order: Order
 ) -> Order:
+    if order.user_id != user_id:
+        raise OrderServiceError("Order does not belong to this user — cancel refused")
     account = await db.get(BrokerAccount, order.broker_account_id)
     if account is None:
         raise OrderServiceError("Broker account missing")
@@ -266,6 +277,8 @@ async def modify_order(
     price: Decimal | None,
     quantity: int | None,
 ) -> Order:
+    if order.user_id != user_id:
+        raise OrderServiceError("Order does not belong to this user — modify refused")
     if not OrderStatus(order.status).is_working and order.status != OrderStatus.ACCEPTED.value:
         raise OrderServiceError(f"Cannot modify order in status {order.status}")
     if order.environment != Environment.PAPER.value:

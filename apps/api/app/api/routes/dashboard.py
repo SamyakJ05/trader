@@ -148,7 +148,14 @@ async def dashboard_summary(user: CurrentUser, db: DbSession):
         "open_positions": open_positions,
         "open_orders": open_orders,
         "strategies": {status: count for status, count in strategy_rows},
-        "killswitch": await killswitch.status(get_redis()),
+        "killswitch": await killswitch.status(
+            get_redis(),
+            owned_strategy_ids=set(
+                (
+                    await db.execute(select(Strategy.id).where(Strategy.user_id == user.id))
+                ).scalars()
+            ),
+        ),
         "recent_events": [
             {
                 "id": e.id,

@@ -24,6 +24,7 @@ from app.domain.enums import (
 )
 from app.domain.models import OrderRequest
 from app.services import audit
+from app.services import brokers as broker_service
 from app.services import orders as order_service
 from app.services.ai import analyst, generator
 from app.services.ai.llm import (
@@ -188,8 +189,8 @@ class ChatBody(BaseModel):
 @router.post("/analyst/chat")
 async def analyst_chat(body: ChatBody, user: CurrentUser, db: DbSession):
     llm = await _require_llm(db, user.id)
-    account = await db.get(BrokerAccount, body.broker_account_id)
-    if account is None or account.user_id != user.id:
+    account = await broker_service.get_account(db, user.id, body.broker_account_id)
+    if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Broker account not found")
     if account.environment != "paper":
         raise HTTPException(status.HTTP_409_CONFLICT, "AI analyst is paper-only")
@@ -258,9 +259,13 @@ async def approve_proposal(proposal_id: uuid.UUID, user: CurrentUser, db: DbSess
     p = await _owned_proposal(db, user, proposal_id)
     if p.status != AIProposalStatus.PROPOSED.value:
         raise HTTPException(status.HTTP_409_CONFLICT, f"Proposal already {p.status}")
-    account = await db.get(BrokerAccount, p.broker_account_id)
+    # Re-verify ownership rather than trusting the stored FK: this is an
+    # order-placement path, and place_order refuses a mismatch anyway.
+    account = await broker_service.get_account(db, user.id, p.broker_account_id)
     if account is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Broker account no longer exists")
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Broker account no longer exists or is not yours"
+        )
 
     request = OrderRequest(
         symbol=p.symbol,

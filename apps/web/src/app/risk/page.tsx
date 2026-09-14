@@ -5,7 +5,7 @@ import { Button, Card, EmptyState, PageHeader, Pill, Skeleton, Td, Th } from "@/
 import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
-import { KillSwitchStatus, RiskRule } from "@/lib/types";
+import { KillSwitchStatus, RiskRule, User } from "@/lib/types";
 
 interface RiskEvent {
   id: string;
@@ -19,6 +19,7 @@ export default function RiskPage() {
   const { data: rules, loading, reload: reloadRules } = useApi<RiskRule[]>("/risk/rules");
   const { data: events, reload: reloadEvents } = useApi<RiskEvent[]>("/risk/events?limit=50", 10000);
   const { data: kill, reload: reloadKill } = useApi<KillSwitchStatus>("/system/killswitch", 5000);
+  const { data: me } = useApi<User>("/auth/me");
   const { push } = useToast();
 
   async function toggleGlobalKill(engaged: boolean) {
@@ -62,15 +63,19 @@ export default function RiskPage() {
             value={kill?.global_engaged ? "error" : "connected"}
             label={kill?.global_engaged ? "ENGAGED" : "ARMED / NORMAL"}
           />
-          {kill?.global_engaged ? (
-            <Button onClick={() => toggleGlobalKill(false)}>Release</Button>
-          ) : (
-            <Button variant="danger" onClick={() => toggleGlobalKill(true)}>
-              ENGAGE — halt all trading
-            </Button>
-          )}
+          {me?.is_admin ? (
+            kill?.global_engaged ? (
+              <Button onClick={() => toggleGlobalKill(false)}>Release</Button>
+            ) : (
+              <Button variant="danger" onClick={() => toggleGlobalKill(true)}>
+                ENGAGE — halt all trading
+              </Button>
+            )
+          ) : null}
           <p className="text-sm text-ink-faint">
-            Halts every order (paper and live) and kills running strategies.
+            {me?.is_admin
+              ? "Halts every order (paper and live) and kills running strategies, for every user on this instance."
+              : "Operator-controlled: halts trading for every user on this instance. Use a per-strategy kill switch on the Strategies page to stop your own strategies."}
           </p>
         </div>
       </Card>

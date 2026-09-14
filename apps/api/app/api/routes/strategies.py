@@ -11,6 +11,7 @@ from app.db.models import Strategy, TradingSignal
 from app.domain.enums import AuditEventType, Environment, StrategyStatus
 from app.engines.strategy.runner import STRATEGY_REGISTRY
 from app.services import audit, killswitch
+from app.services import brokers as broker_service
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -76,11 +77,18 @@ async def create_strategy(body: StrategyBody, user: CurrentUser, db: DbSession):
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"Unknown strategy kind '{body.kind}'; available: {list(STRATEGY_REGISTRY)}",
         )
+    # The runner loads this account verbatim on every tick and places orders
+    # through it — an unvalidated id here is an order path into another
+    # user's account.
+    account = await broker_service.get_account(db, user.id, body.broker_account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Broker account not found")
     strategy = Strategy(
         user_id=user.id,
         name=body.name,
         kind=body.kind,
-        broker_account_id=body.broker_account_id,
+        # Use the verified row's id, not the request body's.
+        broker_account_id=account.id,
         environment=body.environment.value,
         symbols=body.symbols,
         params=body.params,

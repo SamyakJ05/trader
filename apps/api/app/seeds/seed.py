@@ -36,12 +36,24 @@ async def seed() -> None:
                 email=DEMO_EMAIL,
                 password_hash=hash_password(DEMO_PASSWORD),
                 full_name="Demo Trader",
+                # The seeded local user is the instance operator, so the
+                # global kill switch stays reachable in a dev setup.
+                is_admin=True,
             )
             db.add(user)
             await db.flush()
             print(f"created user {DEMO_EMAIL} (password: {DEMO_PASSWORD})")
         else:
-            print(f"user {DEMO_EMAIL} exists")
+            # Idempotent re-seed of an existing database: the operator flag is
+            # backfilled to false by migration 0005, so promote here too.
+            # Without this, an upgraded instance has zero admins and the
+            # global kill switch — a break-glass safety control — is
+            # unreachable by anyone.
+            if not user.is_admin:
+                user.is_admin = True
+                print(f"user {DEMO_EMAIL} exists — promoted to operator (is_admin)")
+            else:
+                print(f"user {DEMO_EMAIL} exists")
 
         result = await db.execute(
             select(BrokerAccount).where(

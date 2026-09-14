@@ -156,6 +156,19 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
                 await db.commit()
                 break
             for signal in signals:
-                await _act_on_signal(db, redis, strategy, account, signal)
-                emitted += 1
+                # One strategy's failure must not abort the tick for every
+                # other user: the runner loop is shared across all tenants.
+                try:
+                    await _act_on_signal(db, redis, strategy, account, signal)
+                    emitted += 1
+                except Exception:
+                    logger.exception(
+                        "strategy_signal_failed",
+                        strategy=str(strategy.id),
+                        symbol=signal.symbol,
+                    )
+                    await db.rollback()
+                    strategy.status = StrategyStatus.ERROR.value
+                    await db.commit()
+                    break
     return emitted

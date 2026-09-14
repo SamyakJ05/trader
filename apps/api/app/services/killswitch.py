@@ -68,11 +68,27 @@ async def set_strategy(
     )
 
 
-async def status(redis: aioredis.Redis) -> dict:
+async def status(
+    redis: aioredis.Redis,
+    owned_strategy_ids: set[uuid.UUID] | set[str] | None = None,
+) -> dict:
+    """Kill-switch status for one caller.
+
+    `owned_strategy_ids` scopes `killed_strategies` to the caller's own
+    strategies. The Redis keyspace is global, so an unfiltered scan would
+    hand every tenant's strategy ids to any authenticated user — which is
+    also exactly what an attacker needs to target a foreign kill switch.
+    Pass an empty set for 'this user owns nothing'; None is accepted only
+    for operator/system callers that legitimately see everything.
+    """
     reason = await redis.get(GLOBAL_KEY)
     strategy_keys = [k async for k in redis.scan_iter("kill:strategy:*")]
+    killed = [k.rsplit(":", 1)[-1] for k in strategy_keys]
+    if owned_strategy_ids is not None:
+        owned = {str(s) for s in owned_strategy_ids}
+        killed = [k for k in killed if k in owned]
     return {
         "global_engaged": reason is not None,
         "global_reason": reason,
-        "killed_strategies": [k.rsplit(":", 1)[-1] for k in strategy_keys],
+        "killed_strategies": killed,
     }

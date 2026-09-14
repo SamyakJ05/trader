@@ -49,6 +49,7 @@ class UserOut(BaseModel):
     id: str
     email: str
     full_name: str | None
+    is_admin: bool = False
 
 
 class AuthResponse(BaseModel):
@@ -72,7 +73,12 @@ async def _create_session(db: DbSession, user: User) -> AuthResponse:
     return AuthResponse(
         token=token,
         expires_at=expires,
-        user=UserOut(id=str(user.id), email=user.email, full_name=user.full_name),
+        user=UserOut(
+            id=str(user.id),
+            email=user.email,
+            full_name=user.full_name,
+            is_admin=user.is_admin,
+        ),
     )
 
 
@@ -117,4 +123,9 @@ async def logout(user: CurrentUser, db: DbSession):
 
 @router.get("/me", response_model=UserOut)
 async def me(user: CurrentUser):
-    return UserOut(id=str(user.id), email=user.email, full_name=user.full_name)
+    return UserOut(
+        id=str(user.id),
+        email=user.email,
+        full_name=user.full_name,
+        is_admin=user.is_admin,
+    )
