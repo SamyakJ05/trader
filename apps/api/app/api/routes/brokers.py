@@ -1,4 +1,5 @@
 import uuid
+from urllib.parse import quote, urlencode
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
@@ -11,11 +12,13 @@ from app.adapters.registry import get_adapter
 from app.adapters.zerodha.adapter import ZerodhaAdapter
 from app.core.config import get_settings
 from app.core.deps import DbSession, VerifiedUser
+from app.core.redis import get_redis
 from app.db.models import BrokerAccount, CashLedger
 from app.domain.capabilities import CAPABILITY_MATRIX
 from app.domain.enums import AuditEventType, Broker, Environment
 from app.services import audit
 from app.services import brokers as broker_service
+from app.services import oauth_state
 
 router = APIRouter(prefix="/brokers", tags=["brokers"])
 
@@ -143,9 +146,19 @@ async def connect_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSessi
         result = await broker_service.connect(db, account)
     except BrokerError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
-    # Zerodha login_url needs the account id round-tripped via redirect.
+    # Zerodha round-trips opaque redirect_params back to our callback. Mint a
+    # single-use state token rather than sending the account id alone: the
+    # callback cannot authenticate its caller, so the state is what proves the
+    # returning browser is finishing the flow this user started.
     if "login_url" in result and account.broker == Broker.ZERODHA.value:
-        result["login_url"] += f"&redirect_params=account_id%3D{account.id}"
+        state = await oauth_state.issue(
+            get_redis(),
+            user_id=user.id,
+            account_id=account.id,
+            broker=account.broker,
+        )
+        params = urlencode({"account_id": str(account.id), "state": state})
+        result["login_url"] += f"&redirect_params={quote(params, safe='')}"
     return result
 
 
@@ -240,21 +253,45 @@ async def zerodha_callback(
     db: DbSession,
     request_token: str | None = None,
     account_id: uuid.UUID | None = None,
+    state: str | None = None,
     error: str | None = None,
 ):
-    """Kite Connect redirect target. SCAFFOLD: exchange flow implemented per
-    docs but unverified against a live app. Unauthenticated by design (Kite
-    redirects the browser here); account binding comes from redirect_params.
+    """Kite Connect redirect target.
 
-    TODO(callback-state): account_id arrives as a bare query param. Before any
-    live use, replace it with a signed, expiring state token minted at
-    /connect time and verified here, so a third party cannot bind their Kite
-    session to someone else's account row."""
+    Unauthenticated by necessity: Kite redirects the browser here and there is
+    no session on the request. The state token minted at /connect is what
+    stands in for that -- it is single-use, expires in fifteen minutes, and
+    names the account and user it was minted for. Without it, an account id in
+    the query string would be enough for anyone to bind their own Kite session
+    to someone else's account, or a victim's to their own.
+
+    The account is resolved FROM the state, never from the query string.
+    """
     web = get_settings().web_base_url
-    if error or not request_token or not account_id:
+    if error or not request_token:
         return RedirectResponse(f"{web}/brokers?error=zerodha_auth_failed")
 
-    result = await db.execute(select(BrokerAccount).where(BrokerAccount.id == account_id))
+    try:
+        claim = await oauth_state.consume(get_redis(), state)
+    except oauth_state.StateError:
+        # Covers a missing, expired, replayed or forged state. The message is
+        # deliberately the same for all of them.
+        return RedirectResponse(f"{web}/brokers?error=invalid_state")
+
+    if account_id is not None and not oauth_state.matches(
+        claim, account_id=account_id, broker=Broker.ZERODHA.value
+    ):
+        return RedirectResponse(f"{web}/brokers?error=invalid_state")
+
+    claimed_account_id = uuid.UUID(claim["account_id"])
+    result = await db.execute(
+        select(BrokerAccount).where(
+            BrokerAccount.id == claimed_account_id,
+            # The state also names the user it was minted for, so a state
+            # stolen from one user cannot bind an account belonging to another.
+            BrokerAccount.user_id == uuid.UUID(claim["user_id"]),
+        )
+    )
     account = result.scalar_one_or_none()
     if account is None or account.broker != Broker.ZERODHA.value:
         return RedirectResponse(f"{web}/brokers?error=unknown_account")

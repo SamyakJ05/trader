@@ -245,7 +245,7 @@ What each broker requires:
 | Broker | Needs | Flow from UI |
 |---|---|---|
 | paper | nothing | Create connection → done; Verify/Sync work immediately |
-| zerodha | Kite app; `<REF>_API_KEY` / `<REF>_API_SECRET` in backend env; redirect URL `http://localhost:8000/api/v1/brokers/zerodha/callback` | Connect → Kite login → callback exchanges request_token via SHA-256 checksum → token stored encrypted → land back on `/brokers?connected=…` → Verify read access. Token expires daily; Reconnect re-validates, Connect re-runs login. |
+| zerodha | Kite app; `<REF>_API_KEY` / `<REF>_API_SECRET` in backend env; redirect URL `http://localhost:8000/api/v1/brokers/zerodha/callback` | Connect mints a single-use state token → Kite login → callback verifies the state, exchanges request_token via SHA-256 checksum → token stored encrypted → land back on `/brokers?connected=…` → Verify read access. Token expires daily; Reconnect re-validates, Connect re-runs login. |
 | groww | daily access token (paste via “Set token”, stored encrypted, never re-displayed) or `<REF>_ACCESS_TOKEN` env | Create → Set token → Verify read access. Scaffolded: read paths unverified, trading disabled. |
 | icici_breeze | `<REF>_API_KEY` / `<REF>_API_SECRET` env + session token from manual login at `api.icicidirect.com/apiuser/login?api_key=…` (not OAuth) | Create → Set token → Verify read access. Scaffolded: read paths unverified, trading disabled. |
 
@@ -320,6 +320,22 @@ rate limiting to mean anything.
 **Email** goes through Resend (`RESEND_API_KEY` + `EMAIL_FROM`). Without a key
 configured, messages are written to the API log instead, so invite links stay
 usable in local development.
+
+### The broker OAuth callback
+
+Kite redirects the user's browser to `/brokers/zerodha/callback`, which cannot
+authenticate its caller — there is no session on that request, and the URL is
+reachable by anyone. Binding a broker session to an account by an id in the
+query string would therefore let a third party attach their own Kite session to
+someone else's account, or a victim's session to their own, which is worse: the
+victim's orders would route through credentials the attacker controls.
+
+`POST /accounts/{id}/connect` mints a single-use state token that records the
+user, account and broker it was issued for. The callback consumes it, resolves
+the account **from the state** rather than the query string, and filters that
+lookup by the user the state names. A callback with no state, an expired or
+replayed state, or a state naming a different account is refused. States expire
+in fifteen minutes and redeem exactly once.
 
 ## Security notes
 
