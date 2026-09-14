@@ -5,7 +5,7 @@ from arq.connections import RedisSettings
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
-from app.workers.jobs import paper_tick, strategy_tick
+from app.workers.jobs import broker_session_tick, paper_tick, strategy_tick
 
 
 async def startup(ctx: dict) -> None:
@@ -18,6 +18,11 @@ class WorkerSettings:
         # price step + fills every 5s; strategies every 15s
         cron(paper_tick, second={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
         cron(strategy_tick, second={0, 15, 30, 45}),
+        # Broker sessions die at the daily exchange flush (~6am IST). Checked
+        # every quarter hour rather than once at the flush, so a worker that
+        # was down at 6am still corrects itself rather than leaving every
+        # account claiming to be connected all day.
+        cron(broker_session_tick, minute={0, 15, 30, 45}),
     ]
     on_startup = startup
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)

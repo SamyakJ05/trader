@@ -22,7 +22,9 @@ from decimal import Decimal
 
 import httpx
 
+from app.adapters.throttle import kite_limiter
 from app.adapters.zerodha.ticker import KiteTickFeed
+from app.core.redis import get_redis
 from app.adapters.base import (
     BrokerAdapter,
     BrokerError,
@@ -131,9 +133,36 @@ class ZerodhaAdapter(BrokerAdapter):
             "Authorization": f"token {self.credentials.api_key}:{access_token}",
         }
 
+    def _throttle_category(self, path: str) -> str:
+        """Kite allows different rates per endpoint family."""
+        if path.startswith("/quote") or path.startswith("/instruments"):
+            return "quote"
+        if path.startswith("/orders"):
+            return "order"
+        return "default"
+
     async def _request(self, method: str, path: str, **kwargs) -> dict:
+        # Every Kite call passes through here, which is why the throttle sits
+        # at this one point rather than at each call site. The budget is per
+        # Kite app and shared across processes, so it lives in Redis: an
+        # in-process limiter would be wrong by however many workers are up,
+        # and exceeding the limit blocks the whole app rather than one request.
+        if self.credentials.api_key:
+            await kite_limiter(
+                get_redis(),
+                api_key=self.credentials.api_key,
+                category=self._throttle_category(path),
+            ).acquire()
         async with httpx.AsyncClient(base_url=API_BASE, timeout=15) as client:
             resp = await client.request(method, path, headers=self._auth_headers(), **kwargs)
+        if resp.status_code == 429:
+            # We throttle client-side, so a 429 means our model of the limit
+            # disagrees with the broker's. Say so plainly rather than letting
+            # it surface as a generic error.
+            raise BrokerError(
+                "Kite rate limit exceeded despite client-side throttling — "
+                "the configured rate may be higher than the broker now allows"
+            )
         if resp.status_code == 403:
             raise SessionExpiredError("Kite returned 403 — daily token likely expired")
         body = resp.json()

@@ -3,19 +3,27 @@ from fastapi import APIRouter, Request
 from app.core.deps import DbSession
 from app.db.models import WebhookEvent
 from app.domain.enums import AuditEventType, Broker
-from app.services import audit
+from app.core.logging import get_logger
+from app.services import audit, postbacks
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
 @router.post("/zerodha")
 async def zerodha_postback(request: Request, db: DbSession):
-    """Kite Connect order postback receiver. SCAFFOLD: stores the event for
-    the audit trail; checksum validation and order-state reconciliation are
-    TODO before live use.
+    """Kite order postback receiver.
 
-    TODO(zerodha-postback): validate checksum = SHA256(order_id + order_timestamp
-    + api_secret), then update the matching orders row by broker_order_id."""
+    The URL is public, so nothing here is trusted until its checksum verifies
+    against the account's api_secret: a forged postback could otherwise mark an
+    order filled that never was, and the platform would book a position it does
+    not hold.
+
+    Always answers 200. Kite retries anything else, and a postback we cannot
+    match or verify will not become matchable on a retry — the raw event is
+    stored either way, so nothing is lost.
+    """
     try:
         payload = await request.json()
     except Exception:
@@ -33,5 +41,15 @@ async def zerodha_postback(request: Request, db: DbSession):
         entity_type="webhook",
         payload={"broker": "zerodha", "order_id": payload.get("order_id")},
     )
+    try:
+        order_id = await postbacks.handle(db, payload)
+    except postbacks.PostbackError as exc:
+        # Refused, not failed: an unverifiable postback is recorded and
+        # ignored. Logged at warning because a genuine one failing to verify
+        # means credentials have drifted.
+        logger.warning("postback_refused", broker="zerodha", reason=str(exc))
+        await db.commit()
+        return {"status": "ignored"}
+
     await db.commit()
-    return {"status": "received"}
+    return {"status": "reconciled" if order_id else "received"}

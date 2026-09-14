@@ -13,6 +13,7 @@ from app.db.session import async_session_factory
 from app.engines.paper import engine as paper_engine
 from app.engines.paper import market_sim
 from app.engines.strategy import runner
+from app.services.sessions_broker import expire_stale_sessions
 
 logger = get_logger(__name__)
 
@@ -68,3 +69,18 @@ async def strategy_tick(ctx: dict) -> None:
         emitted = await runner.run_once(db, redis)
     if emitted:
         logger.info("strategy_tick", signals=emitted)
+
+
+async def broker_session_tick(ctx: dict) -> None:
+    """Mark broker sessions that the daily exchange flush has invalidated.
+
+    Runs a few times an hour rather than once at the flush: a worker that was
+    down at 6am would otherwise leave every account claiming to be connected
+    until the next morning.
+    """
+    async with async_session_factory() as db:
+        try:
+            await expire_stale_sessions(db)
+        except Exception:
+            await db.rollback()
+            logger.exception("broker_session_tick_failed")
