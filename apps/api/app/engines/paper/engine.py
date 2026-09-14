@@ -15,6 +15,7 @@ Fill model:
 
 import random
 import uuid
+from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 import redis.asyncio as aioredis
@@ -22,9 +23,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BrokerAccount, Fill, FundsSnapshot, Order, Position
-from app.domain.enums import AuditEventType, OrderSide, OrderStatus, OrderType, ProductType
+from app.domain.enums import (
+    AuditEventType,
+    Broker,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    ProductType,
+)
 from app.engines.paper import market_sim
-from app.engines.paper.charges import estimate_charges
+from app.engines.paper.charges import compute_charges
 from app.engines.paper.pnl import apply_fill
 from app.services import audit, daily_pnl
 
@@ -124,12 +132,44 @@ async def _apply_fill_to_position(
     return position, position.realized_pnl - realized_before
 
 
+async def _first_delivery_sell_of_day(db: AsyncSession, order: Order) -> bool:
+    """Whether this is the day's first delivery sell of this scrip.
+
+    The DP charge is levied per scrip per day on the demat debit, not per
+    trade: selling the same holding twice in one session pays it once.
+    """
+    if order.product != ProductType.CNC.value or order.side != OrderSide.SELL.value:
+        return False
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    result = await db.execute(
+        select(Fill)
+        .join(Order, Fill.order_id == Order.id)
+        .where(
+            Order.broker_account_id == order.broker_account_id,
+            Order.symbol == order.symbol,
+            Order.product == ProductType.CNC.value,
+            Order.side == OrderSide.SELL.value,
+            Fill.ts >= day_start,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is None
+
+
 async def _execute_fill(
     db: AsyncSession, redis: aioredis.Redis, order: Order, fill_qty: int, fill_price: Decimal
 ) -> None:
-    charges = estimate_charges(
-        OrderSide(order.side), ProductType(order.product), fill_qty, fill_price
+    account = await db.get(BrokerAccount, order.broker_account_id)
+    breakdown = compute_charges(
+        broker=account.broker if account else Broker.PAPER,
+        side=OrderSide(order.side),
+        product=ProductType(order.product),
+        quantity=fill_qty,
+        price=fill_price,
+        exchange=order.exchange,
+        is_first_sell_of_scrip_today=await _first_delivery_sell_of_day(db, order),
     )
+    charges = breakdown.total
     db.add(Fill(order_id=order.id, quantity=fill_qty, price=fill_price, charges=charges))
 
     prev_filled = order.filled_quantity or 0
@@ -162,7 +202,14 @@ async def _execute_fill(
         entity_type="order",
         entity_id=order.id,
         correlation_id=order.client_order_id,
-        payload={"qty": fill_qty, "price": fill_price, "charges": charges},
+        payload={
+            "qty": fill_qty,
+            "price": fill_price,
+            "charges": charges,
+            # Itemised so the audit trail explains a cost rather than
+            # asserting one.
+            "charge_breakdown": breakdown.as_dict(),
+        },
     )
     await audit.emit(
         db,

@@ -4,15 +4,14 @@ ALLOW, BLOCK (this order), HALT (kill switch / daily loss breach).
 Every evaluation is persisted as a risk_event and audited."""
 
 import uuid
-from datetime import datetime, time, timezone
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 import redis.asyncio as aioredis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.domain import calendar
 from app.db.models import BrokerAccount, Position, RiskEvent, RiskRule
 from app.domain.enums import (
     AuditEventType,
@@ -23,20 +22,17 @@ from app.domain.enums import (
 from app.domain.models import OrderRequest, RiskResult
 from app.services import audit, daily_pnl, killswitch
 
-IST = ZoneInfo("Asia/Kolkata")
-NSE_OPEN = time(9, 15)
-NSE_CLOSE = time(15, 30)
+# Kept as aliases: tests and other callers import them from here.
+IST = calendar.IST
+NSE_OPEN = calendar.NSE_OPEN
+NSE_CLOSE = calendar.NSE_CLOSE
 
 COOLDOWN_KEY = "risk:cooldown:{account_id}:{symbol}:{side}"
 
 
-def is_market_open(now: datetime | None = None) -> bool:
-    """NSE equity hours, Mon-Fri 09:15-15:30 IST.
-    TODO(holidays): wire an exchange holiday calendar."""
-    now_ist = (now or datetime.now(timezone.utc)).astimezone(IST)
-    if now_ist.weekday() >= 5:
-        return False
-    return NSE_OPEN <= now_ist.time() <= NSE_CLOSE
+# Re-exported so existing callers and tests keep working; the calendar module
+# owns the definition now that it also has to answer settlement questions.
+is_market_open = calendar.is_market_open
 
 
 class RiskEngine:
@@ -114,7 +110,10 @@ class RiskEngine:
     ) -> str | None:
         if rule_type == RiskRuleType.MARKET_HOURS:
             if get_settings().market_hours_enforced and not is_market_open():
-                return "Outside NSE market hours (09:15-15:30 IST, Mon-Fri)"
+                return (
+                    "Outside NSE trading hours "
+                    "(09:15-15:30 IST on a trading day)"
+                )
 
         elif rule_type == RiskRuleType.MAX_ORDER_NOTIONAL:
             limit = Decimal(str(params.get("max_notional", 100000)))
