@@ -92,6 +92,10 @@ async def create_backtest(body: BacktestBody, user: VerifiedUser, db: DbSession)
             product=body.product,
             initial_cash=body.initial_cash,
             params=dict(fast=body.fast, slow=body.slow, quantity=body.quantity),
+            # Metrics annualise by sqrt(periods per year), so the bar size has
+            # to reach them: scoring minute bars as daily understates Sharpe by
+            # roughly twenty times.
+            interval=body.interval,
         )
     except (ValueError, CalendarUnavailable) as exc:
         raise HTTPException(422, str(exc)) from exc

@@ -240,3 +240,21 @@ def test_no_new_intraday_entry_after_the_square_off_window_opens():
     )
     assert result["fill_count"] == 0
     assert result["rejected_signals"] > 0
+
+
+def test_metrics_annualise_using_the_bar_interval():
+    """Metrics scale by sqrt(periods per year), so the bar size must reach
+    them. Scoring minute bars as daily understates Sharpe roughly twentyfold —
+    the route selects candles by interval, so it must pass that interval on."""
+    opens = [100 + (i % 7) for i in range(60)]
+    closes = [101 + (i % 5) for i in range(60)]
+    candles = bars(opens, closes)
+    daily = run_backtest(
+        BuyThenSell(), candles, symbol="RELIANCE", initial_cash=D("100000"), interval="1d"
+    )
+    minute = run_backtest(
+        BuyThenSell(), candles, symbol="RELIANCE", initial_cash=D("100000"), interval="1m"
+    )
+    assert daily["risk_metrics"]["periods_per_year"] == 250
+    assert minute["risk_metrics"]["periods_per_year"] == 250 * 375
+    assert daily["risk_metrics"]["sharpe_ratio"] != minute["risk_metrics"]["sharpe_ratio"]

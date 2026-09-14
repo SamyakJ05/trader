@@ -35,14 +35,21 @@ backtest engine.
 Statutory components are broker-independent and go in one module. Brokerage is
 per broker and per plan, so it hangs off an interface the adapters supply.
 
-Equity charge stack, as of this writing (rates are configuration, not
-constants buried in code — they change with budgets):
+Equity charge stack (rates are configuration, not constants buried in code —
+they change with budgets and exchange circulars).
+
+Corrected during implementation: the 0.00297% exchange rate this spec was
+drafted with predates NSE circular FA73061, effective 1 March 2026, which
+raised transaction charges to Rs 306.99 per crore and cut IPFT to Rs 0.01,
+leaving the total at Rs 307. DP charges — Rs 15.34 per scrip per day on
+delivery sells — were missing from this table entirely. Both were caught by
+verifying against primary sources rather than writing the rates from memory.
 
 | Component | Delivery (CNC) | Intraday (MIS) |
 |---|---|---|
 | Brokerage | broker rule | broker rule |
 | STT | 0.1% buy + 0.1% sell | 0.025% sell only |
-| Exchange txn (NSE) | 0.00297% | 0.00297% |
+| Exchange txn (NSE) | 0.00307% | 0.00307% |
 | SEBI | ₹10 per crore | ₹10 per crore |
 | Stamp duty | 0.015% buy | 0.003% buy |
 | GST | 18% on (brokerage + exchange + SEBI) | same |
@@ -172,7 +179,16 @@ TDD throughout, matching the existing pure-unit style.
   profitable without it** — this is the test that proves the fill model is
   honest.
 
-## Open question deferred
+## Rate versioning — built, not deferred
+
+This was scoped as a deferred question and then built: rates are a dated table
+and charges take a trade date, so a 2023 backtest is priced with 2023 rates.
+Where a historical rate could not be established from a primary source — NSE's
+pre-2023 volume slabs, CDSL's pre-October-2024 DP slabs — the gap is recorded
+and surfaced on the charge breakdown rather than filled with a plausible
+number.
+
+## Original note (superseded)
 
 Charges rates change with government budgets. This phase hardcodes current
 rates in a config module with a dated comment. If the platform runs long
