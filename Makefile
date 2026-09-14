@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate makemigration seed test lint fmt psql redis api-shell reset-db
+.PHONY: setup up down logs migrate makemigration seed bootstrap-admin test lint fmt psql redis api-shell reset-db
 
 setup: ## copy env file
 	cp -n .env.example .env || true
@@ -21,6 +21,11 @@ makemigration:
 
 seed:
 	docker compose exec api python -m app.seeds.seed
+
+# Create or promote the first operator. Registration is invite-only, so a
+# fresh deployment needs this once: make bootstrap-admin email=you@example.com
+bootstrap-admin:
+	docker compose exec api python -m app.seeds.bootstrap_admin $(email)
 
 test:
 	docker compose exec api pytest -q

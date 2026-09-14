@@ -45,6 +45,10 @@ class User(Base):
 
 
 class AuthSession(Base):
+    """One row per signed-in device. Revocation is explicit (revoked_at) rather
+    than a delete, so a revoked session stays visible in the device list and in
+    the audit trail."""
+
     __tablename__ = "sessions"
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -52,8 +56,33 @@ class AuthSession(Base):
     token: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    user_agent: Mapped[str | None] = mapped_column(String(512))
+    ip: Mapped[str | None] = mapped_column(String(64))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User] = relationship()
+
+
+class Invite(Base):
+    """Invite-only registration. The raw token exists only in the email we
+    send; the database stores its hash, so a database read cannot be replayed
+    into an account."""
+
+    __tablename__ = "invites"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    full_name: Mapped[str | None] = mapped_column(String(255))
+    as_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BrokerAccount(Base):

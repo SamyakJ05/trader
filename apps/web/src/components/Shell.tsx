@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useEffect, useState } from "react";
 import { api, getToken, setToken } from "@/lib/api";
-import { KillSwitchStatus } from "@/lib/types";
+import { KillSwitchStatus, User } from "@/lib/types";
 import { KillSwitchBanner } from "./broker/KillSwitchBanner";
 import { Pill } from "./ui";
 import {
@@ -16,6 +16,7 @@ import {
   IconOrders,
   IconPositions,
   IconRisk,
+  IconSettings,
   IconStrategy,
 } from "./icons";
 
@@ -39,6 +40,7 @@ const NAV_GROUPS: { label: string; items: { href: string; label: string; icon: R
       { href: "/strategies", label: "Strategies", icon: <IconStrategy /> },
       { href: "/risk", label: "Risk", icon: <IconRisk /> },
       { href: "/audit", label: "Audit Log", icon: <IconAudit /> },
+      { href: "/devices", label: "Devices", icon: <IconSettings /> },
     ],
   },
 ];
@@ -47,6 +49,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [kill, setKill] = useState<KillSwitchStatus | null>(null);
+  const [me, setMe] = useState<User | null>(null);
 
   useEffect(() => {
     if (!getToken()) {
@@ -55,6 +58,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     }
     const load = () => api<KillSwitchStatus>("/system/killswitch").then(setKill).catch(() => {});
     load();
+    api<User>("/auth/me").then(setMe).catch(() => {});
     const id = setInterval(load, 10000);
     return () => clearInterval(id);
   }, [router]);
@@ -72,7 +76,19 @@ export default function Shell({ children }: { children: ReactNode }) {
         </div>
 
         <nav className="flex-1 space-y-5">
-          {NAV_GROUPS.map((group) => (
+          {[
+            ...NAV_GROUPS,
+            ...(me?.is_admin
+              ? [
+                  {
+                    label: "Operator",
+                    items: [
+                      { href: "/admin", label: "Users", icon: <IconSettings /> },
+                    ],
+                  },
+                ]
+              : []),
+          ].map((group) => (
             <div key={group.label}>
               <p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
                 {group.label}

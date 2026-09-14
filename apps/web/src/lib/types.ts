@@ -5,6 +5,34 @@ export interface User {
   is_admin: boolean;
 }
 
+export interface AdminUser extends User {
+  is_active: boolean;
+  created_at: string;
+  active_sessions: number;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  full_name: string | null;
+  as_admin: boolean;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+  revoked_at: string | null;
+  /** Present only when the invite email failed to send. */
+  invite_url?: string | null;
+}
+
+export interface DeviceSession {
+  id: string;
+  user_agent: string | null;
+  ip: string | null;
+  created_at: string;
+  last_seen_at: string | null;
+  current: boolean;
+}
+
 export interface CredentialStatus {
   env_keys_configured: boolean;
   env_access_token_configured: boolean;

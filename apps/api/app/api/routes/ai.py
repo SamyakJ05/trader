@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.deps import CurrentUser, DbSession
 from app.core.redis import get_redis
-from app.db.models import AIProposal, AISettings, BrokerAccount
+from app.db.models import AIProposal, AISettings
 from app.domain.enums import (
     AIProposalStatus,
     AuditEventType,

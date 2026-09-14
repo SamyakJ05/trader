@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     ai_model: str = "claude-opus-4-8"
 
+    # Outbound email. Without a key the console backend logs messages instead,
+    # so invite and reset links stay usable in development.
+    resend_api_key: str | None = None
+    email_from: str | None = None
+    invite_ttl_hours: int = 168
+
     zerodha_redirect_url: str = "http://localhost:8000/api/v1/brokers/zerodha/callback"
     web_base_url: str = "http://localhost:3000"
     cors_origins: list[str] = ["http://localhost:3000"]

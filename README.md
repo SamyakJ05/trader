@@ -57,6 +57,7 @@ make seed         # demo user + paper account + risk rules + demo strategy
 
 Then:
 - Web UI: http://localhost:3000 — login `demo@trader.local` / `demo1234`
+  (seeded as an operator; invite other people from the Users page)
 - API docs (OpenAPI): http://localhost:8000/docs
 - Health: http://localhost:8000/api/v1/healthz
 
@@ -187,7 +188,8 @@ All under `/api/v1`. Full schemas at `/docs`.
 
 | Area | Endpoints |
 |---|---|
-| auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` |
+| auth | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `GET /auth/invite/{token}`, `POST /auth/register` (invite-only), `GET /auth/sessions`, `DELETE /auth/sessions/{id}` |
+| admin | `GET /admin/users`, `GET/POST /admin/invites`, `DELETE /admin/invites/{id}`, `POST /admin/users/{id}/suspend`, `POST .../unsuspend`, `PATCH .../admin` |
 | brokers | `GET/POST /brokers/accounts`, `DELETE /brokers/accounts/{id}`, `POST .../connect`, `POST .../reconnect` (refresh-session), `POST .../disconnect`, `POST .../verify` (read access), `POST .../sync`, `PUT .../session-token`, `PATCH .../live`, `GET /brokers/capabilities`, `GET /brokers/zerodha/callback` |
 | dashboard | `GET /dashboard/summary` (accounts, funds, positions, orders, strategies, kill switch, recent audit — with partial-data flags) |
 | portfolio | `GET /portfolio/summary`, `/funds`, `/holdings`, `/positions` |
@@ -257,6 +259,39 @@ Zerodha callback in local dev: the backend (not the Next app) receives the
 redirect on port 8000, completes the token exchange, then 302s the browser to
 `http://localhost:3000/brokers?connected={account_id}` (or `?error=…`), which
 the Brokers page surfaces as a banner.
+
+## Accounts and access
+
+Registration is **invite-only**. There is no open signup: an operator invites
+by email, the invitee clicks the emailed link and sets their own password.
+Clicking the link proves control of the address, so invited accounts need no
+separate email-verification step. Invites expire after 7 days and work once.
+
+Bootstrapping a fresh deployment (no accounts exist yet, so nobody can invite):
+
+```bash
+make bootstrap-admin email=you@example.com
+```
+
+That creates or promotes an operator and prints a temporary password. Local dev
+is already covered — `make seed` creates `demo@trader.local` as an operator.
+
+**Operator (`is_admin`)** gates actions whose blast radius crosses users: the
+global kill switch, the `/admin` page, invites, and suspension. An operator
+cannot suspend or demote themselves, and the last remaining operator cannot be
+demoted by anyone — otherwise the instance becomes unadministrable and the
+global kill switch unreachable.
+
+**Sessions are per-device.** `GET /auth/sessions` lists them, logout revokes
+only the current one, and suspending an account revokes all of its sessions
+immediately rather than waiting for tokens to expire.
+
+**Login is rate limited** — 5 failures per 15 minutes, counted per email and
+per IP, cleared on success.
+
+**Email** goes through Resend (`RESEND_API_KEY` + `EMAIL_FROM`). Without a key
+configured, messages are written to the API log instead, so invite links stay
+usable in local development.
 
 ## Security notes
 

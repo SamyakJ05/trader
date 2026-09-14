@@ -47,3 +47,20 @@ def decrypt_secret(stored: str) -> str:
             raise RuntimeError("APP_ENCRYPTION_KEY required to decrypt stored token")
         return f.decrypt(stored[len(_ENC_PREFIX):].encode()).decode()
     return stored
+
+
+def new_invite_token() -> str:
+    """Raw invite/reset token. Emailed once; only its hash is stored."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    """SHA-256 for single-use link tokens.
+
+    Deliberately not bcrypt: these are high-entropy random tokens looked up on
+    every click, not user-chosen passwords, so a slow KDF buys nothing and a
+    fast digest lets the lookup be a plain indexed query.
+    """
+    import hashlib
+
+    return hashlib.sha256(token.encode()).hexdigest()

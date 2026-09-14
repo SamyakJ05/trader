@@ -12,9 +12,8 @@ interface AuthResponse {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("demo@trader.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -23,7 +22,7 @@ export default function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api<AuthResponse>(`/auth/${mode}`, {
+      const res = await api<AuthResponse>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
@@ -49,7 +48,8 @@ export default function LoginPage() {
           <Pill value="paper" label="PAPER" />
         </div>
         <p className="mb-7 text-sm text-ink-dim">
-          Paper-first algo trading. Seed login: demo@trader.local / demo1234
+          Paper-first algo trading. Accounts are invite-only — ask your
+          instance operator for an invite link.
         </p>
         <label className={labelClass}>Email</label>
         <input
@@ -68,18 +68,9 @@ export default function LoginPage() {
           required
           minLength={8}
         />
-        <div className="flex items-center justify-between">
-          <Button type="submit" variant="primary" disabled={busy}>
-            {busy ? "…" : mode === "login" ? "Log in" : "Create account"}
-          </Button>
-          <button
-            type="button"
-            className="text-sm text-ink-faint hover:text-ink"
-            onClick={() => setMode(mode === "login" ? "register" : "login")}
-          >
-            {mode === "login" ? "Need an account?" : "Have an account?"}
-          </button>
-        </div>
+        <Button type="submit" variant="primary" disabled={busy}>
+          {busy ? "…" : "Log in"}
+        </Button>
         <ErrorNote message={error} />
       </form>
     </div>
