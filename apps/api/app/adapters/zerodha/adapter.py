@@ -22,6 +22,7 @@ from decimal import Decimal
 
 import httpx
 
+from app.adapters.zerodha.ticker import KiteTickFeed
 from app.adapters.base import (
     BrokerAdapter,
     BrokerError,
@@ -295,6 +296,38 @@ class ZerodhaAdapter(BrokerAdapter):
                 continue  # skip exchanges/segments we don't model yet
         return out
 
+    async def tick_feed(self, token_to_symbol: dict[int, str]) -> KiteTickFeed:
+        """A started Kite tick feed for these instruments.
+
+        Kite's socket speaks in numeric instrument tokens, so the caller passes
+        the mapping back to trading symbols — it comes from the instruments
+        sync, which is the only thing that knows both.
+
+        Returns the feed rather than an iterator so the caller owns its
+        lifetime: the underlying reactor thread must be stopped explicitly.
+        """
+        if not self.credentials.api_key:
+            raise BrokerError("Missing Zerodha api key")
+        token_enc = self.account.session_token_enc
+        if not token_enc:
+            raise SessionExpiredError("Kite ticks need a live session; connect first")
+        access_token = decrypt_secret(token_enc)
+        feed = KiteTickFeed(
+            api_key=self.credentials.api_key,
+            access_token=access_token,
+            token_to_symbol=token_to_symbol,
+        )
+        await feed.start()
+        return feed
+
     def subscribe_ticks(self, symbols: list[str]) -> AsyncIterator[Tick]:
-        # TODO: implement Kite WebSocket (wss://ws.kite.trade) binary protocol.
-        raise FeatureNotSupportedError("Zerodha WebSocket ticks not implemented yet")
+        """Not supported through this interface.
+
+        The base interface takes trading symbols, but Kite subscribes by
+        numeric instrument token, and resolving one to the other needs the
+        instruments table this adapter does not own. Use `tick_feed` with a
+        token mapping instead.
+        """
+        raise FeatureNotSupportedError(
+            "Kite subscribes by instrument token, not symbol — use tick_feed()"
+        )
