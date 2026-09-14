@@ -41,6 +41,11 @@ class User(Base):
     # today only the global kill switch, which halts strategy execution for
     # every user on the instance.
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # TOTP is mandatory: a user without totp_enabled_at can reach only the
+    # enrolment endpoints. The secret is Fernet-encrypted at rest.
+    totp_secret_enc: Mapped[str | None] = mapped_column(String(512))
+    totp_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -60,8 +65,41 @@ class AuthSession(Base):
     ip: Mapped[str | None] = mapped_column(String(64))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # True for a session issued to finish TOTP enrolment. Its holder proved a
+    # password but no second factor, so it authorises only the setup endpoints.
+    enrolment_only: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
 
     user: Mapped[User] = relationship()
+
+
+class RecoveryCode(Base):
+    """Single-use backup codes for TOTP. Mandatory 2FA without recovery makes a
+    lost authenticator a manual-SQL lockout, so these are not optional.
+    Stored bcrypt-hashed and shown to the user exactly once."""
+
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    code_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PasswordReset(Base):
+    """Single-use password-reset token. Like invites, only the hash is stored;
+    the raw token exists solely in the email."""
+
+    __tablename__ = "password_resets"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Invite(Base):

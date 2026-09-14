@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
 from app.db.models import AIProposal, AISettings
 from app.domain.enums import (
@@ -48,7 +48,7 @@ def utcnow() -> datetime:
 
 
 @router.get("/status")
-async def ai_status(user: CurrentUser, db: DbSession):
+async def ai_status(user: VerifiedUser, db: DbSession):
     row = await get_ai_settings(db, user.id)
     if row is not None and row.credentials_enc:
         return {"configured": True, "provider": row.provider, "model": row.model}
@@ -69,7 +69,7 @@ class AISettingsBody(BaseModel):
 
 
 @router.get("/settings")
-async def read_settings(user: CurrentUser, db: DbSession):
+async def read_settings(user: VerifiedUser, db: DbSession):
     row = await get_ai_settings(db, user.id)
     env_fallback = bool(get_settings().anthropic_api_key)
     if row is None:
@@ -94,7 +94,7 @@ async def read_settings(user: CurrentUser, db: DbSession):
 
 
 @router.put("/settings")
-async def write_settings(body: AISettingsBody, user: CurrentUser, db: DbSession):
+async def write_settings(body: AISettingsBody, user: VerifiedUser, db: DbSession):
     if body.provider not in PROVIDERS:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -142,7 +142,7 @@ async def write_settings(body: AISettingsBody, user: CurrentUser, db: DbSession)
 
 
 @router.post("/settings/test")
-async def test_settings(user: CurrentUser, db: DbSession):
+async def test_settings(user: VerifiedUser, db: DbSession):
     llm = await resolve_llm(db, user.id)
     if llm is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AI is not configured")
@@ -187,7 +187,7 @@ class ChatBody(BaseModel):
 
 
 @router.post("/analyst/chat")
-async def analyst_chat(body: ChatBody, user: CurrentUser, db: DbSession):
+async def analyst_chat(body: ChatBody, user: VerifiedUser, db: DbSession):
     llm = await _require_llm(db, user.id)
     account = await broker_service.get_account(db, user.id, body.broker_account_id)
     if account is None:
@@ -238,7 +238,7 @@ def _proposal_out(p: AIProposal) -> dict:
 
 
 @router.get("/proposals")
-async def list_proposals(user: CurrentUser, db: DbSession, status_filter: str | None = None):
+async def list_proposals(user: VerifiedUser, db: DbSession, status_filter: str | None = None):
     query = select(AIProposal).where(AIProposal.user_id == user.id)
     if status_filter:
         query = query.where(AIProposal.status == status_filter)
@@ -255,7 +255,7 @@ async def _owned_proposal(db, user, proposal_id: uuid.UUID) -> AIProposal:
 
 
 @router.post("/proposals/{proposal_id}/approve")
-async def approve_proposal(proposal_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def approve_proposal(proposal_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     p = await _owned_proposal(db, user, proposal_id)
     if p.status != AIProposalStatus.PROPOSED.value:
         raise HTTPException(status.HTTP_409_CONFLICT, f"Proposal already {p.status}")
@@ -300,7 +300,7 @@ async def approve_proposal(proposal_id: uuid.UUID, user: CurrentUser, db: DbSess
 
 
 @router.post("/proposals/{proposal_id}/reject")
-async def reject_proposal(proposal_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def reject_proposal(proposal_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     p = await _owned_proposal(db, user, proposal_id)
     if p.status != AIProposalStatus.PROPOSED.value:
         raise HTTPException(status.HTTP_409_CONFLICT, f"Proposal already {p.status}")
@@ -326,7 +326,7 @@ class GenerateBody(BaseModel):
 
 
 @router.post("/strategies/generate")
-async def generate_strategy(body: GenerateBody, user: CurrentUser, db: DbSession):
+async def generate_strategy(body: GenerateBody, user: VerifiedUser, db: DbSession):
     llm = await _require_llm(db, user.id)
     try:
         return await generator.generate(llm, body.prompt)

@@ -188,8 +188,8 @@ All under `/api/v1`. Full schemas at `/docs`.
 
 | Area | Endpoints |
 |---|---|
-| auth | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `GET /auth/invite/{token}`, `POST /auth/register` (invite-only), `GET /auth/sessions`, `DELETE /auth/sessions/{id}` |
-| admin | `GET /admin/users`, `GET/POST /admin/invites`, `DELETE /admin/invites/{id}`, `POST /admin/users/{id}/suspend`, `POST .../unsuspend`, `PATCH .../admin` |
+| auth | `POST /auth/login` (returns a challenge), `POST /auth/login/verify` (TOTP or recovery code → session), `POST /auth/logout`, `GET /auth/me`, `GET /auth/invite/{token}`, `POST /auth/register` (invite-only), `GET /auth/sessions`, `DELETE /auth/sessions/{id}`, `POST /auth/totp/setup`, `POST /auth/totp/enable`, `GET /auth/totp/status`, `POST /auth/totp/recovery-codes`, `POST /auth/password/forgot`, `POST /auth/password/reset`, `POST /auth/password/change` |
+| admin | `GET /admin/users`, `GET/POST /admin/invites`, `DELETE /admin/invites/{id}`, `POST /admin/users/{id}/suspend`, `POST .../unsuspend`, `POST .../reset-2fa`, `PATCH .../admin` |
 | brokers | `GET/POST /brokers/accounts`, `DELETE /brokers/accounts/{id}`, `POST .../connect`, `POST .../reconnect` (refresh-session), `POST .../disconnect`, `POST .../verify` (read access), `POST .../sync`, `PUT .../session-token`, `PATCH .../live`, `GET /brokers/capabilities`, `GET /brokers/zerodha/callback` |
 | dashboard | `GET /dashboard/summary` (accounts, funds, positions, orders, strategies, kill switch, recent audit — with partial-data flags) |
 | portfolio | `GET /portfolio/summary`, `/funds`, `/holdings`, `/positions` |
@@ -276,18 +276,42 @@ make bootstrap-admin email=you@example.com
 That creates or promotes an operator and prints a temporary password. Local dev
 is already covered — `make seed` creates `demo@trader.local` as an operator.
 
+On first sign-in every account, including a bootstrapped operator, is sent
+through two-factor setup before it can reach anything else. Existing accounts
+on an upgraded instance are treated the same way.
+
 **Operator (`is_admin`)** gates actions whose blast radius crosses users: the
 global kill switch, the `/admin` page, invites, and suspension. An operator
 cannot suspend or demote themselves, and the last remaining operator cannot be
 demoted by anyone — otherwise the instance becomes unadministrable and the
 global kill switch unreachable.
 
+**Two-factor authentication is mandatory.** Login is two-step: a correct
+password returns a short-lived challenge, and only a TOTP code (or a recovery
+code) exchanges that challenge for a session. A user who has not finished
+enrolment can reach nothing but the setup flow — every other route refuses with
+`totp_setup_required`, and the web app routes them to `/security/setup`.
+
+Enrolment issues **ten single-use recovery codes**, shown exactly once. They
+are the only way back in if an authenticator is lost, so they are hashed at
+rest and cannot be redisplayed — generate a fresh set from `/security` if you
+run low. An operator can also clear someone's second factor entirely
+(`reset-2fa`), which revokes their sessions and sends them back to setup.
+
 **Sessions are per-device.** `GET /auth/sessions` lists them, logout revokes
 only the current one, and suspending an account revokes all of its sessions
 immediately rather than waiting for tokens to expire.
 
+**Password reset** is self-service: a single-use emailed link, valid 30
+minutes. Completing a reset revokes every session, since a reset is the
+response to a suspected compromise. Changing a password from `/security`
+revokes every *other* session and keeps the current one.
+
 **Login is rate limited** — 5 failures per 15 minutes, counted per email and
-per IP, cleared on success.
+per IP. Only the email counter clears on success: clearing the IP counter too
+would let anyone holding one valid login reset it at will. TOTP verification
+and password-reset requests are limited the same way — a six-digit code needs
+rate limiting to mean anything.
 
 **Email** goes through Resend (`RESEND_API_KEY` + `EMAIL_FROM`). Without a key
 configured, messages are written to the API log instead, so invite links stay

@@ -9,7 +9,7 @@ from decimal import Decimal
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
 from app.db.models import (
     AuditEvent,
@@ -59,7 +59,7 @@ async def _latest_snapshot(db, model, account_id):
 
 
 @router.get("/summary")
-async def dashboard_summary(user: CurrentUser, db: DbSession):
+async def dashboard_summary(user: VerifiedUser, db: DbSession):
     accounts = (
         (
             await db.execute(

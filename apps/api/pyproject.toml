@@ -21,6 +21,7 @@ dependencies = [
     "greenlet>=3.1",
     "anthropic>=0.40",
     "openai>=1.50",
+    "pyotp>=2.9",
 ]
 
 [project.optional-dependencies]

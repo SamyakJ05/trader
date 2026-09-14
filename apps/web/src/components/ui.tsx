@@ -87,6 +87,8 @@ const PILL_STYLES: Record<string, string> = {
   working: "bg-gain/10 text-gain border-gain/30",
   scaffold: "bg-warn/10 text-warn border-warn/30",
   planned: "bg-panel-2 text-ink-faint border-line-2",
+  // generic severity
+  warn: "bg-warn/10 text-warn border-warn/30",
   // connection
   connected: "bg-gain/10 text-gain border-gain/30",
   disconnected: "bg-panel-2 text-ink-faint border-line-2",

@@ -63,7 +63,66 @@ async def get_current_user(db: DbSession, session: CurrentSession) -> User:
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-async def get_current_admin(user: CurrentUser) -> User:
+async def get_enrolling_user(session: CurrentSession, user: CurrentUser) -> User:
+    """A principal permitted to reach the TOTP enrolment endpoints.
+
+    Accepts both a full session and an enrolment-only one. Use this ONLY on
+    routes that exist to complete setup — an enrolment session's holder has
+    proven a password and nothing else, so anything it can reach is reachable
+    with a stolen password alone.
+    """
+    return user
+
+
+EnrollingUser = Annotated[User, Depends(get_enrolling_user)]
+
+
+async def get_full_session_user(session: CurrentSession, user: CurrentUser) -> User:
+    """A user on a fully authenticated session (password AND second factor).
+
+    An enrolment-only session is refused here: it must not be able to change
+    the password, list devices, or do anything beyond finishing setup.
+    """
+    if session.enrolment_only:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            {
+                "code": "totp_setup_required",
+                "message": "Finish setting up two-factor authentication to continue.",
+            },
+        )
+    return user
+
+
+FullSessionUser = Annotated[User, Depends(get_full_session_user)]
+
+
+async def get_verified_user(user: FullSessionUser) -> User:
+    """A user who has completed TOTP enrolment.
+
+    TOTP is mandatory on this instance, so this — not CurrentUser — is the
+    dependency for ordinary routes. A user who has not enrolled can reach only
+    the enrolment endpoints, logout, and /auth/me; everything else refuses with
+    a machine-readable code the frontend routes on.
+    """
+    if user.totp_enabled_at is None or not user.totp_secret_enc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            {
+                "code": "totp_setup_required",
+                "message": (
+                    "Two-factor authentication is required on this instance. "
+                    "Finish setting it up to continue."
+                ),
+            },
+        )
+    return user
+
+
+VerifiedUser = Annotated[User, Depends(get_verified_user)]
+
+
+async def get_current_admin(user: VerifiedUser) -> User:
     """Operator-only dependency. Use for actions whose effect crosses tenant
     boundaries; ordinary per-user actions must never require it."""
     if not user.is_admin:

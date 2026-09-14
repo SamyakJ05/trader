@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.db.models import RiskEvent, RiskRule
 from app.domain.enums import AuditEventType, Environment, RiskRuleType
 from app.services import audit
@@ -38,7 +38,7 @@ def _out(r: RiskRule) -> RuleOut:
 
 
 @router.get("/rules", response_model=list[RuleOut])
-async def list_rules(user: CurrentUser, db: DbSession):
+async def list_rules(user: VerifiedUser, db: DbSession):
     result = await db.execute(
         select(RiskRule).where(RiskRule.user_id == user.id).order_by(RiskRule.created_at)
     )
@@ -46,7 +46,7 @@ async def list_rules(user: CurrentUser, db: DbSession):
 
 
 @router.post("/rules", response_model=RuleOut, status_code=201)
-async def create_rule(body: RuleBody, user: CurrentUser, db: DbSession):
+async def create_rule(body: RuleBody, user: VerifiedUser, db: DbSession):
     rule = RiskRule(
         user_id=user.id,
         rule_type=body.rule_type.value,
@@ -64,7 +64,7 @@ async def create_rule(body: RuleBody, user: CurrentUser, db: DbSession):
 
 
 @router.patch("/rules/{rule_id}", response_model=RuleOut)
-async def update_rule(rule_id: uuid.UUID, body: RuleBody, user: CurrentUser, db: DbSession):
+async def update_rule(rule_id: uuid.UUID, body: RuleBody, user: VerifiedUser, db: DbSession):
     result = await db.execute(
         select(RiskRule).where(RiskRule.id == rule_id, RiskRule.user_id == user.id)
     )
@@ -85,7 +85,7 @@ async def update_rule(rule_id: uuid.UUID, body: RuleBody, user: CurrentUser, db:
 
 
 @router.delete("/rules/{rule_id}", status_code=204)
-async def delete_rule(rule_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def delete_rule(rule_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     result = await db.execute(
         select(RiskRule).where(RiskRule.id == rule_id, RiskRule.user_id == user.id)
     )
@@ -101,7 +101,7 @@ async def delete_rule(rule_id: uuid.UUID, user: CurrentUser, db: DbSession):
 
 
 @router.get("/events")
-async def risk_events(user: CurrentUser, db: DbSession, limit: int = 100):
+async def risk_events(user: VerifiedUser, db: DbSession, limit: int = 100):
     result = await db.execute(
         select(RiskEvent)
         .where(RiskEvent.user_id == user.id)

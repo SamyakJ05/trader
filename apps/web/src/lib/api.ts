@@ -2,9 +2,12 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** Machine-readable reason, when the backend supplies one. */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -37,13 +40,29 @@ export async function api<T = unknown>(
   }
   if (!res.ok) {
     let detail = res.statusText;
+    let code: string | undefined;
     try {
       const body = await res.json();
-      detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? body);
+      if (body.detail && typeof body.detail === "object") {
+        code = body.detail.code;
+        detail = body.detail.message ?? JSON.stringify(body.detail);
+      } else {
+        detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? body);
+      }
     } catch {
       /* keep statusText */
     }
-    throw new ApiError(res.status, detail);
+    // Two-factor is mandatory: a user who hasn't enrolled can reach nothing
+    // but the setup flow, so send them there rather than showing an error on
+    // a page that will never load.
+    if (
+      code === "totp_setup_required" &&
+      typeof window !== "undefined" &&
+      !window.location.pathname.startsWith("/security/setup")
+    ) {
+      window.location.href = "/security/setup";
+    }
+    throw new ApiError(res.status, detail, code);
   }
   if (res.status === 204) return undefined as T;
   return res.json();

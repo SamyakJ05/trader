@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
 from app.db.models import Order
 from app.domain.enums import Environment
@@ -81,7 +81,7 @@ def _order_out(o: Order) -> OrderOut:
 
 @router.get("", response_model=list[OrderOut])
 async def list_orders(
-    user: CurrentUser,
+    user: VerifiedUser,
     db: DbSession,
     environment: Environment | None = None,
     status_filter: str | None = None,
@@ -100,7 +100,7 @@ async def list_orders(
 @router.post("", response_model=OrderOut, status_code=201)
 async def place_order(
     body: PlaceOrderBody,
-    user: CurrentUser,
+    user: VerifiedUser,
     db: DbSession,
     idempotency_key: str | None = Header(default=None),
 ):
@@ -120,7 +120,7 @@ async def place_order(
     return _order_out(order)
 
 
-async def _owned_order(db: DbSession, user: CurrentUser, order_id: uuid.UUID) -> Order:
+async def _owned_order(db: DbSession, user: VerifiedUser, order_id: uuid.UUID) -> Order:
     result = await db.execute(
         select(Order).where(Order.id == order_id, Order.user_id == user.id)
     )
@@ -131,12 +131,12 @@ async def _owned_order(db: DbSession, user: CurrentUser, order_id: uuid.UUID) ->
 
 
 @router.get("/{order_id}", response_model=OrderOut)
-async def get_order(order_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def get_order(order_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     return _order_out(await _owned_order(db, user, order_id))
 
 
 @router.post("/{order_id}/cancel", response_model=OrderOut)
-async def cancel_order(order_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def cancel_order(order_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     order = await _owned_order(db, user, order_id)
     try:
         order = await order_service.cancel_order(db, get_redis(), user_id=user.id, order=order)
@@ -147,7 +147,7 @@ async def cancel_order(order_id: uuid.UUID, user: CurrentUser, db: DbSession):
 
 @router.patch("/{order_id}", response_model=OrderOut)
 async def modify_order(
-    order_id: uuid.UUID, body: ModifyOrderBody, user: CurrentUser, db: DbSession
+    order_id: uuid.UUID, body: ModifyOrderBody, user: VerifiedUser, db: DbSession
 ):
     order = await _owned_order(db, user, order_id)
     try:

@@ -4,7 +4,7 @@ from decimal import Decimal
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
 from app.db.models import BrokerAccount, FundsSnapshot, HoldingsSnapshot, Position
 from app.domain.enums import Environment
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
 @router.get("/funds")
-async def funds(user: CurrentUser, db: DbSession, account_id: uuid.UUID):
+async def funds(user: VerifiedUser, db: DbSession, account_id: uuid.UUID):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
@@ -33,7 +33,7 @@ async def funds(user: CurrentUser, db: DbSession, account_id: uuid.UUID):
 
 @router.get("/positions")
 async def positions(
-    user: CurrentUser, db: DbSession, environment: Environment = Environment.PAPER
+    user: VerifiedUser, db: DbSession, environment: Environment = Environment.PAPER
 ):
     result = await db.execute(
         select(Position).where(
@@ -67,7 +67,7 @@ async def positions(
 
 
 @router.get("/holdings")
-async def holdings(user: CurrentUser, db: DbSession, account_id: uuid.UUID):
+async def holdings(user: VerifiedUser, db: DbSession, account_id: uuid.UUID):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
@@ -85,7 +85,7 @@ async def holdings(user: CurrentUser, db: DbSession, account_id: uuid.UUID):
 
 @router.get("/summary")
 async def summary(
-    user: CurrentUser, db: DbSession, environment: Environment = Environment.PAPER
+    user: VerifiedUser, db: DbSession, environment: Environment = Environment.PAPER
 ):
     accounts = await db.execute(
         select(BrokerAccount).where(

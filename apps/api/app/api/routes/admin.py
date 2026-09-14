@@ -21,6 +21,7 @@ from app.services import admin as admin_service
 from app.services import audit, email
 from app.services import invites as invite_service
 from app.services import sessions as session_service
+from app.services import totp as totp_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -33,6 +34,7 @@ class AdminUserOut(BaseModel):
     is_active: bool
     created_at: datetime
     active_sessions: int
+    totp_enabled: bool = False
 
 
 class InviteBody(BaseModel):
@@ -84,6 +86,7 @@ async def list_users(admin: CurrentAdmin, db: DbSession):
                 is_active=u.is_active,
                 created_at=u.created_at,
                 active_sessions=len(sessions),
+                totp_enabled=totp_service.is_enrolled(u),
             )
         )
     return out
@@ -229,6 +232,29 @@ async def unsuspend_user(user_id: uuid.UUID, admin: CurrentAdmin, db: DbSession)
     return await _user_out(db, target)
 
 
+@router.post("/users/{user_id}/reset-2fa", response_model=AdminUserOut)
+async def reset_two_factor(user_id: uuid.UUID, admin: CurrentAdmin, db: DbSession):
+    """Clears a user's second factor and recovery codes, forcing re-enrolment.
+
+    This is the lost-authenticator path. TOTP is mandatory, so the user is
+    routed straight back to setup on their next request; their sessions are
+    revoked so a device that is already signed in cannot skip it.
+    """
+    target = await _target(db, user_id)
+    await totp_service.disable(db, target)
+    await admin_service.revoke_all_sessions(db, target.id)
+    await audit.emit(
+        db,
+        AuditEventType.USER_ACTION,
+        user_id=admin.id,
+        entity_type="user",
+        entity_id=target.id,
+        payload={"action": "reset_2fa", "email": target.email},
+    )
+    await db.commit()
+    return await _user_out(db, target)
+
+
 @router.patch("/users/{user_id}/admin", response_model=AdminUserOut)
 async def set_admin(
     user_id: uuid.UUID, body: AdminFlagBody, admin: CurrentAdmin, db: DbSession
@@ -268,4 +294,5 @@ async def _user_out(db: DbSession, user: User) -> AdminUserOut:
         is_active=user.is_active,
         created_at=user.created_at,
         active_sessions=len(sessions),
+        totp_enabled=totp_service.is_enrolled(user),
     )

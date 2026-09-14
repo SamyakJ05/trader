@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, text
 
 from app.core.config import get_settings
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
 from app.db.models import Strategy
 from app.domain.enums import StrategyStatus
@@ -33,7 +33,7 @@ async def healthz(db: DbSession):
 
 
 @router.get("/system/config")
-async def system_config(user: CurrentUser):
+async def system_config(user: VerifiedUser):
     settings = get_settings()
     return {
         "live_trading_enabled": settings.enable_live_trading,
@@ -54,14 +54,14 @@ async def _owned_strategy_ids(db: DbSession, user_id: uuid.UUID) -> set[uuid.UUI
 
 
 @router.get("/system/killswitch")
-async def killswitch_status(user: CurrentUser, db: DbSession):
+async def killswitch_status(user: VerifiedUser, db: DbSession):
     return await killswitch.status(
         get_redis(), owned_strategy_ids=await _owned_strategy_ids(db, user.id)
     )
 
 
 @router.post("/system/killswitch")
-async def set_killswitch(body: KillSwitchBody, user: CurrentUser, db: DbSession):
+async def set_killswitch(body: KillSwitchBody, user: VerifiedUser, db: DbSession):
     redis = get_redis()
     if body.scope == "global":
         # The global switch halts strategy execution for EVERY user on this
@@ -119,7 +119,7 @@ async def set_killswitch(body: KillSwitchBody, user: CurrentUser, db: DbSession)
 
 
 @router.post("/paper/accounts/{account_id}/reset")
-async def reset_paper_account(account_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def reset_paper_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")

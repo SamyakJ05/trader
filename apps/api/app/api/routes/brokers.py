@@ -10,7 +10,7 @@ from app.adapters.base import BrokerError
 from app.adapters.registry import get_adapter
 from app.adapters.zerodha.adapter import ZerodhaAdapter
 from app.core.config import get_settings
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.db.models import BrokerAccount
 from app.domain.capabilities import CAPABILITY_MATRIX
 from app.domain.enums import AuditEventType, Broker, Environment
@@ -72,7 +72,7 @@ async def capabilities():
 
 
 @router.get("/accounts", response_model=list[AccountOut])
-async def list_accounts(user: CurrentUser, db: DbSession):
+async def list_accounts(user: VerifiedUser, db: DbSession):
     result = await db.execute(
         select(BrokerAccount)
         .where(BrokerAccount.user_id == user.id)
@@ -82,7 +82,7 @@ async def list_accounts(user: CurrentUser, db: DbSession):
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
-async def create_account(body: CreateAccountRequest, user: CurrentUser, db: DbSession):
+async def create_account(body: CreateAccountRequest, user: VerifiedUser, db: DbSession):
     if body.environment == Environment.LIVE and body.broker == Broker.PAPER:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Paper broker cannot be live")
     account = BrokerAccount(
@@ -107,7 +107,7 @@ async def create_account(body: CreateAccountRequest, user: CurrentUser, db: DbSe
 
 
 @router.delete("/accounts/{account_id}", status_code=204)
-async def delete_account(account_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def delete_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
@@ -124,7 +124,7 @@ async def delete_account(account_id: uuid.UUID, user: CurrentUser, db: DbSession
 
 
 @router.post("/accounts/{account_id}/connect")
-async def connect_account(account_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def connect_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
@@ -139,7 +139,7 @@ async def connect_account(account_id: uuid.UUID, user: CurrentUser, db: DbSessio
 
 
 @router.post("/accounts/{account_id}/verify")
-async def verify_read_access(account_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def verify_read_access(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     """Exercise profile + funds against the broker; stamps read_verified_at
     on success. This is the only path that may claim 'read-path verified'."""
     account = await broker_service.get_account(db, user.id, account_id)
@@ -149,7 +149,7 @@ async def verify_read_access(account_id: uuid.UUID, user: CurrentUser, db: DbSes
 
 
 @router.post("/accounts/{account_id}/disconnect", response_model=AccountOut)
-async def disconnect_account(account_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def disconnect_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
@@ -164,7 +164,7 @@ class SessionTokenBody(BaseModel):
 
 @router.put("/accounts/{account_id}/session-token", response_model=AccountOut)
 async def set_session_token(
-    account_id: uuid.UUID, body: SessionTokenBody, user: CurrentUser, db: DbSession
+    account_id: uuid.UUID, body: SessionTokenBody, user: VerifiedUser, db: DbSession
 ):
     """Store a broker session/access token (Groww daily token, Breeze session
     token). Encrypted at rest; never echoed back — responses carry masked
@@ -184,7 +184,7 @@ class LiveEnabledBody(BaseModel):
 
 @router.patch("/accounts/{account_id}/live", response_model=AccountOut)
 async def set_live_enabled(
-    account_id: uuid.UUID, body: LiveEnabledBody, user: CurrentUser, db: DbSession
+    account_id: uuid.UUID, body: LiveEnabledBody, user: VerifiedUser, db: DbSession
 ):
     """Account-level live gate. Disabling is always allowed; enabling must
     pass the same constraints the order pipeline enforces."""
@@ -209,7 +209,7 @@ async def set_live_enabled(
 
 
 @router.post("/accounts/{account_id}/refresh-session")
-async def refresh_session(account_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def refresh_session(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
@@ -217,7 +217,7 @@ async def refresh_session(account_id: uuid.UUID, user: CurrentUser, db: DbSessio
 
 
 @router.post("/accounts/{account_id}/sync")
-async def sync_account(account_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def sync_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")

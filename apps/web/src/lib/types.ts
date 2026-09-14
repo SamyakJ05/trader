@@ -3,12 +3,14 @@ export interface User {
   email: string;
   full_name: string | null;
   is_admin: boolean;
+  totp_enabled?: boolean;
 }
 
 export interface AdminUser extends User {
   is_active: boolean;
   created_at: string;
   active_sessions: number;
+  totp_enabled: boolean;
 }
 
 export interface Invite {

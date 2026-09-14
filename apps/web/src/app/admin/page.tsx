@@ -165,6 +165,7 @@ export default function AdminPage() {
                   <Th>Email</Th>
                   <Th>Name</Th>
                   <Th>Role</Th>
+                  <Th>2FA</Th>
                   <Th>Status</Th>
                   <Th>Devices</Th>
                   <Th right>Actions</Th>
@@ -181,6 +182,12 @@ export default function AdminPage() {
                       </Td>
                       <Td>{u.full_name ?? "—"}</Td>
                       <Td>{u.is_admin ? "Operator" : "User"}</Td>
+                      <Td>
+                        <Pill
+                          value={u.totp_enabled ? "connected" : "warn"}
+                          label={u.totp_enabled ? "2FA ON" : "NOT SET UP"}
+                        />
+                      </Td>
                       <Td>
                         <Pill
                           value={u.is_active ? "connected" : "error"}
@@ -202,6 +209,20 @@ export default function AdminPage() {
                               }
                             >
                               {u.is_admin ? "Demote" : "Make operator"}
+                            </Button>
+                          )}
+                          {!self && u.totp_enabled && (
+                            <Button
+                              onClick={() =>
+                                act(
+                                  `/admin/users/${u.id}/reset-2fa`,
+                                  "POST",
+                                  undefined,
+                                  "2FA reset — they will set it up again at next sign-in",
+                                )
+                              }
+                            >
+                              Reset 2FA
                             </Button>
                           )}
                           {!self &&

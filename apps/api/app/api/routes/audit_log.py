@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.db.models import AuditEvent
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -9,7 +9,7 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 
 @router.get("/events")
 async def list_events(
-    user: CurrentUser,
+    user: VerifiedUser,
     db: DbSession,
     event_type: str | None = None,
     entity_type: str | None = None,

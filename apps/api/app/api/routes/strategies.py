@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, DbSession
+from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
 from app.db.models import Strategy, TradingSignal
 from app.domain.enums import AuditEventType, Environment, StrategyStatus
@@ -59,7 +59,7 @@ async def kinds():
 
 
 @router.get("", response_model=list[StrategyOut])
-async def list_strategies(user: CurrentUser, db: DbSession):
+async def list_strategies(user: VerifiedUser, db: DbSession):
     result = await db.execute(
         select(Strategy).where(Strategy.user_id == user.id).order_by(Strategy.created_at)
     )
@@ -71,7 +71,7 @@ async def list_strategies(user: CurrentUser, db: DbSession):
 
 
 @router.post("", response_model=StrategyOut, status_code=201)
-async def create_strategy(body: StrategyBody, user: CurrentUser, db: DbSession):
+async def create_strategy(body: StrategyBody, user: VerifiedUser, db: DbSession):
     if body.kind not in STRATEGY_REGISTRY:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -106,7 +106,7 @@ async def create_strategy(body: StrategyBody, user: CurrentUser, db: DbSession):
     return _out(strategy)
 
 
-async def _owned(db: DbSession, user: CurrentUser, strategy_id: uuid.UUID) -> Strategy:
+async def _owned(db: DbSession, user: VerifiedUser, strategy_id: uuid.UUID) -> Strategy:
     result = await db.execute(
         select(Strategy).where(Strategy.id == strategy_id, Strategy.user_id == user.id)
     )
@@ -117,7 +117,7 @@ async def _owned(db: DbSession, user: CurrentUser, strategy_id: uuid.UUID) -> St
 
 
 @router.post("/{strategy_id}/start", response_model=StrategyOut)
-async def start(strategy_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def start(strategy_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     strategy = await _owned(db, user, strategy_id)
     if strategy.environment == Environment.LIVE.value:
         raise HTTPException(
@@ -142,7 +142,7 @@ async def start(strategy_id: uuid.UUID, user: CurrentUser, db: DbSession):
 
 
 @router.post("/{strategy_id}/stop", response_model=StrategyOut)
-async def stop(strategy_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def stop(strategy_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     strategy = await _owned(db, user, strategy_id)
     strategy.status = StrategyStatus.STOPPED.value
     await audit.emit(
@@ -154,7 +154,7 @@ async def stop(strategy_id: uuid.UUID, user: CurrentUser, db: DbSession):
 
 
 @router.delete("/{strategy_id}", status_code=204)
-async def delete_strategy(strategy_id: uuid.UUID, user: CurrentUser, db: DbSession):
+async def delete_strategy(strategy_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     strategy = await _owned(db, user, strategy_id)
     if strategy.status == StrategyStatus.RUNNING.value:
         raise HTTPException(status.HTTP_409_CONFLICT, "Stop the strategy before deleting")
@@ -163,7 +163,7 @@ async def delete_strategy(strategy_id: uuid.UUID, user: CurrentUser, db: DbSessi
 
 
 @router.get("/{strategy_id}/signals")
-async def signals(strategy_id: uuid.UUID, user: CurrentUser, db: DbSession, limit: int = 50):
+async def signals(strategy_id: uuid.UUID, user: VerifiedUser, db: DbSession, limit: int = 50):
     await _owned(db, user, strategy_id)
     result = await db.execute(
         select(TradingSignal)

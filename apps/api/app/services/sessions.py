@@ -30,21 +30,34 @@ def is_live(session) -> bool:
     return expires_at >= utcnow()
 
 
+# An enrolment session exists only to finish TOTP setup. It is short-lived and
+# its holder has proven a password but no second factor, so it must not be
+# usable for anything else.
+ENROLMENT_TTL_MINUTES = 15
+
+
 async def create(
     db: AsyncSession,
     user_id: uuid.UUID,
     *,
     user_agent: str | None = None,
     ip: str | None = None,
+    enrolment_only: bool = False,
 ) -> AuthSession:
     now = utcnow()
+    ttl = (
+        timedelta(minutes=ENROLMENT_TTL_MINUTES)
+        if enrolment_only
+        else timedelta(hours=get_settings().session_ttl_hours)
+    )
     session = AuthSession(
         user_id=user_id,
         token=new_session_token(),
-        expires_at=now + timedelta(hours=get_settings().session_ttl_hours),
+        expires_at=now + ttl,
         user_agent=(user_agent or "")[:512] or None,
         ip=ip,
         last_seen_at=now,
+        enrolment_only=enrolment_only,
     )
     db.add(session)
     await db.flush()
