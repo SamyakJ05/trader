@@ -8,13 +8,25 @@ import { useApi } from "@/lib/useApi";
 
 type Config = { symbol: string; interval: string; source: string; product: string };
 type Summary = { id: string; created_at: string; config: Config; total_return: string };
+type RiskMetrics = {
+  annualised_return: string | null; sharpe_ratio: string | null; sortino_ratio: string | null;
+  calmar_ratio: string | null; value_at_risk_95: string | null;
+  conditional_value_at_risk_95: string | null; profit_factor: string | null;
+  average_win: string | null; average_loss: string | null; exposure: string | null;
+  observations: number; risk_free_rate: string; periods_per_year: number;
+};
 type Run = { id: string; config: Config; results: {
   total_return: string; max_drawdown: string; win_rate: number; trade_count: number;
   total_charges: string; final_equity: string; open_quantity: number; rejected_signals: number;
-  candle_count: number; source: string; limitations: string[];
+  candle_count: number; source: string; limitations: string[]; square_offs?: number;
+  unfilled_final_signals?: number; data_sha256?: string; risk_metrics?: RiskMetrics;
   equity_curve: { ts: string; equity: string }[];
 } };
 const percent = (v: string | number) => `${(Number(v) * 100).toFixed(2)}%`;
+// A metric the engine could not compute is null, not zero. Showing "0.00"
+// would read as a measured, mediocre result rather than an unmeasurable one.
+const ratio = (v: string | null | undefined) => (v === null || v === undefined ? "—" : Number(v).toFixed(2));
+const maybePercent = (v: string | null | undefined) => (v === null || v === undefined ? "—" : percent(v));
 const rupees = (v: string) => Number(v).toLocaleString("en-IN", { style: "currency", currency: "INR" });
 
 export default function BacktestsPage() {
@@ -88,8 +100,40 @@ export default function BacktestsPage() {
           <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2" className="text-accent" />
         </svg>
         <div className="flex justify-between text-xs text-ink-dim"><span>{curve[0]?.ts.slice(0, 10)}</span><span>{curve.at(-1)?.ts.slice(0, 10)}</span></div>
-        <p className="mt-3 text-sm">Open quantity: {run.results.open_quantity} · Rejected signals: {run.results.rejected_signals}</p>
+        <p className="mt-3 text-sm">Open quantity: {run.results.open_quantity} · Rejected signals: {run.results.rejected_signals}
+          {run.results.square_offs ? ` · Forced square-offs: ${run.results.square_offs}` : ""}
+          {run.results.unfilled_final_signals ? ` · Final-bar signals dropped: ${run.results.unfilled_final_signals}` : ""}</p>
       </Card>
+      {run.results.risk_metrics && (
+        <Card>
+          <h2 className="mb-2 font-semibold">Risk-adjusted performance</h2>
+          <p className="mb-4 text-sm text-ink-dim">
+            Return alone cannot tell a steady climb from a violent one, nor a high win
+            rate that loses money. Annualised against {run.results.risk_metrics.periods_per_year.toLocaleString()} periods
+            per year at a {percent(run.results.risk_metrics.risk_free_rate)} risk-free rate,
+            over {run.results.risk_metrics.observations.toLocaleString()} observations.
+          </p>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {[["Annualised return", maybePercent(run.results.risk_metrics.annualised_return)],
+              ["Sharpe", ratio(run.results.risk_metrics.sharpe_ratio)],
+              ["Sortino", ratio(run.results.risk_metrics.sortino_ratio)],
+              ["Calmar", ratio(run.results.risk_metrics.calmar_ratio)],
+              ["Profit factor", ratio(run.results.risk_metrics.profit_factor)],
+              ["Exposure", maybePercent(run.results.risk_metrics.exposure)],
+              ["VaR 95%", maybePercent(run.results.risk_metrics.value_at_risk_95)],
+              ["CVaR 95%", maybePercent(run.results.risk_metrics.conditional_value_at_risk_95)]].map(([label, value]) =>
+              <div key={label} className="rounded-lg border border-line bg-panel-2 p-3">
+                <p className="text-xs uppercase tracking-wide text-ink-faint">{label}</p>
+                <p className="mt-1 text-lg font-semibold">{value}</p>
+              </div>)}
+          </div>
+          <p className="mt-3 text-sm text-ink-faint">
+            A dash means the metric is undefined for this run — usually too few
+            observations to annualise, or no losing trades to divide by.
+          </p>
+        </Card>
+      )}
+
       <Card><h2 className="mb-2 font-semibold">Model limitations</h2><ul className="list-disc space-y-1 pl-5 text-sm text-ink-dim">{run.results.limitations.map(text => <li key={text}>{text}</li>)}</ul></Card>
     </div>}
     <div className="mt-5"><Card><h2 className="mb-3 font-semibold">Saved runs</h2>

@@ -18,19 +18,46 @@ logger = get_logger(__name__)
 
 
 async def paper_tick(ctx: dict) -> None:
+    """The platform's shared heartbeat: price step, settlement, fills, marks.
+
+    Every stage is guarded independently. This one job drives paper trading for
+    every user on the instance, so a failure in one stage -- or in one account
+    inside a stage -- must not stop the others, and must not stop the next
+    tick. Settlement and fills isolate per account and per order internally.
+    """
     redis = get_redis()
     prices = await market_sim.tick_all(redis)
+    filled = 0
     async with async_session_factory() as db:
-        await settle_due(db)
-        await db.commit()
+        try:
+            await settle_due(db)
+        except Exception:
+            await db.rollback()
+            logger.exception("settlement_stage_failed")
+
         now = datetime.now(timezone.utc)
-        for symbol, price in prices.items():
-            await record_tick(
-                db, Tick(symbol=symbol, exchange=Exchange.NSE, last_price=price, ts=now)
-            )
-        filled = await paper_engine.process_open_orders(db, redis)
-        await paper_engine.mark_positions(db, redis)
-        await db.commit()
+        try:
+            for symbol, price in prices.items():
+                await record_tick(
+                    db, Tick(symbol=symbol, exchange=Exchange.NSE, last_price=price, ts=now)
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("candle_stage_failed")
+
+        try:
+            filled = await paper_engine.process_open_orders(db, redis)
+        except Exception:
+            await db.rollback()
+            logger.exception("fill_stage_failed")
+
+        try:
+            await paper_engine.mark_positions(db, redis)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("mark_stage_failed")
     if filled:
         logger.info("paper_tick", symbols=len(prices), orders_filled=filled)
 

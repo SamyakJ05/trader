@@ -1,5 +1,10 @@
 """Delivery inventory. All mutations share the cash ledger's account lock."""
 
+from app.core.logging import get_logger
+
+
+logger = get_logger(__name__)
+
 
 class SettlementError(RuntimeError):
     """Raised when settlement would violate an accounting invariant."""
@@ -115,5 +120,20 @@ async def settle_due(db, now=None):
         .scalars()
         .all()
     )
+    settled, failed = 0, 0
     for account_id in accounts:
-        await settle_account(db, account_id, now)
+        # Isolate per account. This runs on the shared platform tick, so an
+        # invariant violation on one account must not stop every other user's
+        # settlements -- and a rollback must not discard the accounts that
+        # already succeeded, hence the commit per account.
+        try:
+            await settle_account(db, account_id, now)
+            await db.commit()
+            settled += 1
+        except Exception:
+            await db.rollback()
+            failed += 1
+            logger.exception("settlement_failed", broker_account_id=str(account_id))
+    if failed:
+        logger.warning("settlement_partial", settled=settled, failed=failed)
+    return settled

@@ -36,7 +36,10 @@ from app.engines.paper.ledger import get_cash
 from app.domain.calendar import IST, settlement_date, CalendarUnavailable
 from app.engines.paper.charges import compute_charges
 from app.engines.paper.pnl import apply_fill
+from app.core.logging import get_logger
 from app.services import audit, daily_pnl
+
+logger = get_logger(__name__)
 
 SLIPPAGE_BPS = Decimal("5")
 PARTIAL_FILL_P = 0.3
@@ -316,10 +319,27 @@ async def process_open_orders(db: AsyncSession, redis: aioredis.Redis) -> int:
         .order_by(Order.broker_account_id, Order.id)
     )
     orders = result.scalars().all()
-    filled = 0
+    filled, failed = 0, 0
     for order in orders:
-        if await try_fill_order(db, redis, order):
-            filled += 1
+        # Isolate per order. This loop covers every user's working orders on a
+        # shared tick, so one order that cannot be filled -- a settlement
+        # invariant, a calendar gap, a data problem -- must not stop the rest
+        # of the platform from trading. Committing per order also keeps a
+        # rollback from discarding fills that already succeeded.
+        try:
+            if await try_fill_order(db, redis, order):
+                filled += 1
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            failed += 1
+            logger.exception(
+                "order_fill_failed",
+                order_id=str(order.id),
+                broker_account_id=str(order.broker_account_id),
+            )
+    if failed:
+        logger.warning("paper_fills_partial", filled=filled, failed=failed)
     return filled
 
 
