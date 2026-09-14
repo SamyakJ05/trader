@@ -101,6 +101,7 @@ def run_backtest(
                     quantity=qty,
                     price=bar.open,
                     exchange=exchange,
+                    on=day,
                 ).total
                 notional = money(bar.open * qty)
                 before = realized
@@ -172,6 +173,7 @@ def run_backtest(
                 price=bar.open,
                 exchange=exchange,
                 is_first_sell_of_scrip_today=first_sell,
+                on=day,
             ).total
             notional = money(bar.open * qty)
             if side == OrderSide.BUY and cash < notional + cost:

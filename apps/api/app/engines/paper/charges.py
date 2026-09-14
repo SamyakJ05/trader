@@ -10,6 +10,7 @@ This module only assembles them.
 """
 
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 
 from app.domain.enums import Broker, Exchange, OrderSide, ProductType
@@ -41,6 +42,8 @@ class ChargeBreakdown:
     gst: Decimal = Decimal("0")
     dp_charges: Decimal = Decimal("0")
     notes: list[str] = field(default_factory=list)
+    rates_label: str = ""
+    rates_effective_from: str = rates.RATES_EFFECTIVE_FROM
 
     @property
     def total(self) -> Decimal:
@@ -64,7 +67,9 @@ class ChargeBreakdown:
             "gst": str(self.gst),
             "dp_charges": str(self.dp_charges),
             "total": str(self.total),
-            "rates_effective_from": rates.RATES_EFFECTIVE_FROM,
+            "rates_effective_from": self.rates_effective_from,
+            "rates_label": self.rates_label,
+            "notes": list(self.notes),
         }
 
 
@@ -77,16 +82,26 @@ def compute_charges(
     price: Decimal,
     exchange: Exchange | str = Exchange.NSE,
     is_first_sell_of_scrip_today: bool = True,
+    on: date | None = None,
 ) -> ChargeBreakdown:
     """Charges for one executed order.
 
     `is_first_sell_of_scrip_today` controls the DP charge, which is levied per
     scrip per day rather than per trade — selling the same scrip twice in a day
     incurs it once. The caller knows the day's history; this function does not.
+
+    `on` is the trade date, which selects the rates in force then. Backtests
+    span years and these rates move; pricing a 2023 trade with 2026 rates
+    shifts every P&L in the same direction, so a strategy looks consistently
+    better or worse than it was. Defaults to current rates for live trading.
     """
     breakdown = ChargeBreakdown()
     if quantity <= 0 or price <= 0:
         return breakdown
+    rateset = rates.rates_for(on)
+    breakdown.notes.extend(rates.uncertainty_notes(on))
+    breakdown.rates_label = rateset.label
+    breakdown.rates_effective_from = rateset.effective_from.isoformat()
 
     turnover = Decimal(quantity) * price
     is_delivery = product == ProductType.CNC
@@ -95,37 +110,45 @@ def compute_charges(
     breakdown.brokerage = _round(get_plan(broker).charge(product, turnover))
 
     if is_delivery:
-        stt_rate = rates.STT_DELIVERY_BUY if is_buy else rates.STT_DELIVERY_SELL
+        stt_rate = rateset.stt_delivery_buy if is_buy else rateset.stt_delivery_sell
     else:
-        stt_rate = rates.STT_INTRADAY_BUY if is_buy else rates.STT_INTRADAY_SELL
+        stt_rate = rateset.stt_intraday_buy if is_buy else rateset.stt_intraday_sell
     breakdown.stt = _round(turnover * stt_rate)
 
     if str(getattr(exchange, "value", exchange)) == Exchange.BSE.value:
-        txn_rate = rates.BSE_TXN_CHARGE
+        txn_rate = rateset.bse_txn_charge
     else:
-        txn_rate = rates.NSE_TXN_CHARGE + rates.NSE_IPFT_CHARGE
+        txn_rate = rateset.nse_txn_charge + rateset.nse_ipft_charge
     breakdown.exchange_txn = _round(turnover * txn_rate)
 
-    breakdown.sebi = _round(turnover * rates.SEBI_TURNOVER_FEE)
+    breakdown.sebi = _round(turnover * rateset.sebi_turnover_fee)
 
     if is_buy:
         stamp_rate = (
-            rates.STAMP_DELIVERY_BUY if is_delivery else rates.STAMP_INTRADAY_BUY
+            rateset.stamp_delivery_buy if is_delivery else rateset.stamp_intraday_buy
         )
         breakdown.stamp_duty = _round(turnover * stamp_rate)
 
     # GST applies to brokerage, exchange charges and the SEBI fee only. STT and
     # stamp duty are statutory levies outside the GST net, and the DP charge
     # already has GST baked into its published figure.
-    breakdown.gst = _round(
-        (breakdown.brokerage + breakdown.exchange_txn + breakdown.sebi) * rates.GST_RATE
-    )
+    gst_base = breakdown.brokerage + breakdown.exchange_txn
+    if rateset.sebi_fee_attracts_gst:
+        gst_base += breakdown.sebi
+    breakdown.gst = _round(gst_base * rateset.gst_rate)
 
     # Delivery sells debit the demat account, which is what triggers the DP
     # charge. Flat per scrip per day: quantity does not matter.
     if is_delivery and not is_buy and is_first_sell_of_scrip_today:
-        breakdown.dp_charges = rates.DP_CHARGE_PER_SCRIP
-        breakdown.notes.append("DP charge applies once per scrip per day")
+        if rateset.dp_charge_per_scrip is None:
+            breakdown.notes.append(
+                "DP charge not modelled before 2024-10-01 (CDSL used slab "
+                "rates that could not be recovered); delivery cost is "
+                "understated by roughly Rs 15 per scrip per day"
+            )
+        else:
+            breakdown.dp_charges = rateset.dp_charge_per_scrip
+            breakdown.notes.append("DP charge applies once per scrip per day")
 
     return breakdown
 
@@ -139,6 +162,7 @@ def estimate_charges(
     broker: Broker | str = Broker.PAPER,
     exchange: Exchange | str = Exchange.NSE,
     is_first_sell_of_scrip_today: bool = True,
+    on: date | None = None,
 ) -> Decimal:
     """Total charges. Kept as the existing call shape so the fill pipeline
     does not change; use compute_charges when the breakdown is wanted."""
@@ -150,4 +174,5 @@ def estimate_charges(
         price=price,
         exchange=exchange,
         is_first_sell_of_scrip_today=is_first_sell_of_scrip_today,
+        on=on,
     ).total

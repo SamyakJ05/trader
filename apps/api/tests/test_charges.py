@@ -303,3 +303,117 @@ def test_breakdown_serialises_with_its_rate_vintage():
     payload = buy().as_dict()
     assert payload["rates_effective_from"] == rates.RATES_EFFECTIVE_FROM
     assert Decimal(payload["total"]) == buy().total
+
+
+# ── date-versioned rates ─────────────────────────────────────────────
+# Backtests span years and these rates move. Pricing a 2023 trade with 2026
+# rates shifts every P&L the same way, so a strategy looks consistently better
+# or worse than it was without anything looking obviously wrong.
+
+
+def test_rates_resolve_by_trade_date():
+    from datetime import date as _date
+
+    assert rates.rates_for(_date(2021, 1, 1)).effective_from == _date(2020, 7, 1)
+    assert rates.rates_for(_date(2023, 6, 1)).effective_from == _date(2023, 4, 1)
+    assert rates.rates_for(_date(2025, 1, 1)).effective_from == _date(2024, 10, 1)
+    assert rates.rates_for(_date(2026, 9, 15)).effective_from == _date(2026, 3, 1)
+
+
+def test_no_date_uses_current_rates():
+    """Live trading passes no date and must get today's rates."""
+    assert rates.rates_for(None) is rates.RATE_HISTORY[-1]
+
+
+def test_ipft_rollback_is_reflected_across_the_2026_boundary():
+    """NSE circular FA73061: IPFT went Rs 10 -> Rs 0.01 per crore and
+    transaction charges rose to compensate, leaving the total at Rs 307."""
+    from datetime import date as _date
+
+    before = rates.rates_for(_date(2026, 2, 28))
+    after = rates.rates_for(_date(2026, 3, 1))
+    crore = Decimal("10000000")
+    assert crore * before.nse_ipft_charge == Decimal("10.00")
+    assert crore * after.nse_ipft_charge == Decimal("0.01")
+    # The member's total outflow is unchanged, which is the circular's point.
+    assert crore * (before.nse_txn_charge + before.nse_ipft_charge) == Decimal("307.00")
+    assert crore * (after.nse_txn_charge + after.nse_ipft_charge) == Decimal("307.00")
+
+
+def test_sebi_fee_was_outside_the_gst_base_before_july_2022():
+    """The exemption was withdrawn on 18 Jul 2022. Before that, GST applied to
+    brokerage and exchange charges only."""
+    from datetime import date as _date
+
+    before = compute_charges(
+        broker=Broker.ZERODHA,
+        side=OrderSide.BUY,
+        product=ProductType.MIS,
+        quantity=100,
+        price=Decimal("1000"),
+        on=_date(2022, 7, 1),
+    )
+    after = compute_charges(
+        broker=Broker.ZERODHA,
+        side=OrderSide.BUY,
+        product=ProductType.MIS,
+        quantity=100,
+        price=Decimal("1000"),
+        on=_date(2022, 8, 1),
+    )
+    assert before.gst < after.gst
+
+
+def test_dp_charge_is_not_applied_before_cdsl_went_flat():
+    """CDSL's pre-Oct-2024 slab rates could not be recovered, so DP is not
+    charged then — and the breakdown says so rather than implying it was free."""
+    from datetime import date as _date
+
+    old = compute_charges(
+        broker=Broker.ZERODHA,
+        side=OrderSide.SELL,
+        product=ProductType.CNC,
+        quantity=100,
+        price=Decimal("1000"),
+        on=_date(2024, 6, 1),
+    )
+    assert old.dp_charges == Decimal("0")
+    assert any("not modelled" in note for note in old.notes)
+
+
+def test_a_historical_trade_is_priced_differently_from_today():
+    """The whole point: the same trade in 2021 and 2026 does not cost the same."""
+    from datetime import date as _date
+
+    old = compute_charges(
+        broker=Broker.ZERODHA,
+        side=OrderSide.BUY,
+        product=ProductType.MIS,
+        quantity=100,
+        price=Decimal("1000"),
+        on=_date(2021, 1, 1),
+    )
+    now = compute_charges(
+        broker=Broker.ZERODHA,
+        side=OrderSide.BUY,
+        product=ProductType.MIS,
+        quantity=100,
+        price=Decimal("1000"),
+        on=_date(2026, 9, 15),
+    )
+    assert old.total != now.total
+
+
+def test_the_breakdown_names_the_rate_period_it_used():
+    from datetime import date as _date
+
+    payload = compute_charges(
+        broker=Broker.ZERODHA,
+        side=OrderSide.BUY,
+        product=ProductType.CNC,
+        quantity=10,
+        price=Decimal("100"),
+        on=_date(2023, 6, 1),
+    ).as_dict()
+    assert payload["rates_effective_from"] == "2023-04-01"
+    assert "FA56129" in payload["rates_label"]
