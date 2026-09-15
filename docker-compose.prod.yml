@@ -72,6 +72,16 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # The worker stamps a heartbeat on every tick, with a TTL. A process that
+    # is alive but has stopped ticking -- wedged on a connection, say -- looks
+    # identical to a healthy one from the outside, so liveness is the key's
+    # presence rather than the process's.
+    healthcheck:
+      test: ["CMD-SHELL", "python -m app.workers.healthcheck"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 30s
 
   web:
     build:

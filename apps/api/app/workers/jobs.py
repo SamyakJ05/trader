@@ -13,6 +13,7 @@ from app.db.session import async_session_factory
 from app.engines.paper import engine as paper_engine
 from app.engines.paper import market_sim
 from app.engines.strategy import runner
+from app.services import heartbeat
 from app.services.sessions_broker import expire_stale_sessions
 
 logger = get_logger(__name__)
@@ -27,7 +28,20 @@ async def paper_tick(ctx: dict) -> None:
     tick. Settlement and fills isolate per account and per order internally.
     """
     redis = get_redis()
-    prices = await market_sim.tick_all(redis)
+    # Stamped before any stage that can throw. Liveness means "the worker is
+    # running its loop", which is a different question from "every stage
+    # succeeded" -- a persistent failure in one stage is a bug to fix, not a
+    # reason for the process to be reported as dead.
+    await heartbeat.beat(redis)
+    # Guarded like every other stage. It runs first, so an unguarded failure
+    # here would take settlement, fills and marks down with it -- and
+    # settlement does not depend on prices at all: T+1 holdings becoming
+    # available must not wait on a price feed.
+    prices: dict = {}
+    try:
+        prices = await market_sim.tick_all(redis)
+    except Exception:
+        logger.exception("price_stage_failed")
     filled = 0
     async with async_session_factory() as db:
         try:

@@ -1,35 +1,91 @@
+import time
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select, text
 
 from app.core.config import get_settings
 from app.core.deps import DbSession, VerifiedUser
+from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.db.models import Strategy
 from app.domain.enums import StrategyStatus
-from app.services import brokers as broker_service
-from app.services import killswitch
 from app.engines.paper import engine as paper_engine
+from app.services import brokers as broker_service
+from app.services import heartbeat, killswitch
+
+logger = get_logger(__name__)
 
 router = APIRouter(tags=["system"])
 
 
 @router.get("/healthz")
-async def healthz(db: DbSession):
+async def healthz(db: DbSession, response: Response):
+    """Liveness of this process and its dependencies.
+
+    Returns 503 when degraded, not 200 with a body saying so: uptime monitors
+    and container orchestrators read the status code, and a 200 here would
+    report the instance healthy while Postgres was unreachable.
+    """
     checks = {"db": False, "redis": False}
     try:
         await db.execute(text("SELECT 1"))
         checks["db"] = True
     except Exception:
-        pass
+        logger.warning("healthz_db_unreachable", exc_info=True)
     try:
         checks["redis"] = await get_redis().ping()
     except Exception:
-        pass
+        logger.warning("healthz_redis_unreachable", exc_info=True)
     healthy = all(checks.values())
+    if not healthy:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {"status": "ok" if healthy else "degraded", "checks": checks}
+
+
+@router.get("/readyz")
+async def readyz(db: DbSession, response: Response):
+    """Everything healthz covers, plus whether the worker is still ticking.
+
+    The arq worker advances paper fills and runs strategies. When it dies the
+    api stays up and every page keeps rendering -- positions simply stop
+    moving. That is the failure least likely to be noticed, so it gets an
+    endpoint an uptime monitor can watch.
+
+    Kept separate from /healthz because the two answer different questions: a
+    container orchestrator restarting the api because the worker died would be
+    the wrong response to the right signal.
+    """
+    redis = get_redis()
+    checks = {"db": False, "redis": False, "worker": False}
+    try:
+        await db.execute(text("SELECT 1"))
+        checks["db"] = True
+    except Exception:
+        logger.warning("readyz_db_unreachable", exc_info=True)
+    try:
+        checks["redis"] = await redis.ping()
+    except Exception:
+        logger.warning("readyz_redis_unreachable", exc_info=True)
+
+    last = None
+    if checks["redis"]:
+        # Redis expiring the key is what makes the worker's death visible, so
+        # this check is only meaningful when Redis itself is reachable.
+        try:
+            last = await heartbeat.last_beat(redis)
+            checks["worker"] = last is not None
+        except Exception:
+            logger.warning("readyz_heartbeat_failed", exc_info=True)
+
+    ready = all(checks.values())
+    if not ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    body = {"status": "ok" if ready else "degraded", "checks": checks}
+    if last is not None:
+        body["worker_last_beat_age_seconds"] = max(0, int(time.time()) - last)
+    return body
 
 
 @router.get("/system/config")
