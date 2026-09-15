@@ -1,0 +1,47 @@
+# Local development overlay. Run with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml <cmd>
+#
+# Everything here is dev-only: bind mounts for live reload, host ports, the
+# web dev server instead of a production build. None of it belongs in prod,
+# which is exactly why it lives here instead of in the base file -- see the
+# comment at the top of docker-compose.yml for why that split exists.
+
+services:
+  db:
+    ports:
+      # Loopback only: the default password is "trader".
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      # Loopback only: this Redis has no auth, and holds kill-switch state
+      # and auth rate-limit counters.
+      - "127.0.0.1:6379:6379"
+
+  api:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/api:/app
+
+  worker:
+    volumes:
+      - ./apps/api:/app
+
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install && pnpm dev"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app
+      - web_node_modules:/app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  web_node_modules:

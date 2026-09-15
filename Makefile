@@ -1,11 +1,16 @@
 .PHONY: setup up down logs migrate makemigration seed bootstrap-admin test test-integration lint fmt psql redis api-shell reset-db
 
+# Local dev needs docker-compose.dev.yml layered on top: the base file
+# carries no bind mounts or host ports on purpose (see its header comment),
+# so a plain `docker compose up` without it would build images with no way
+# to reach them or edit code live.
+
 setup: ## copy env file
 	cp -n .env.example .env || true
 	@echo "Edit .env, then run: make up && make migrate && make seed"
 
 up:
-	docker compose up -d --build
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 
 down:
 	docker compose down
@@ -79,7 +84,7 @@ api-shell:
 
 reset-db:
 	docker compose down -v
-	docker compose up -d --build
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 	sleep 5
 	docker compose exec api alembic upgrade head
 	docker compose exec api python -m app.seeds.seed

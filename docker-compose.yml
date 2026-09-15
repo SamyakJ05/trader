@@ -1,3 +1,16 @@
+# Base service definitions shared by dev and prod. Deliberately has no bind
+# mounts, no working_dir, no dev commands: Compose merges volumes/working_dir
+# by matching a value here, replacing it, or leaving it in place if the
+# overlay is silent -- an empty list or omitted key in an overlay does NOT
+# clear something set here (confirmed the hard way: a bind mount and a
+# working_dir set here both survived into the prod overlay silently, because
+# `volumes: []` and no working_dir: override look like "nothing to say" to
+# Compose's merge, not "remove what the base file set"). So the base file
+# says nothing dev-specific, and docker-compose.dev.yml adds it back.
+#
+#   Local dev:  docker compose -f docker-compose.yml -f docker-compose.dev.yml <cmd>
+#   Production: docker compose -f docker-compose.yml -f docker-compose.prod.yml <cmd>
+
 services:
   db:
     image: postgres:16-alpine
@@ -5,11 +18,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-trader}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader}
       POSTGRES_DB: ${POSTGRES_DB:-trader}
-    ports:
-      # Loopback only: the default password is "trader". The prod overlay
-      # disables this service entirely, but the base file must not expose a
-      # database to the internet if someone starts it alone on a host.
-      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -20,10 +28,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      # Loopback only: this Redis has no auth, and holds kill-switch state
-      # and auth rate-limit counters.
-      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -32,15 +36,10 @@ services:
 
   api:
     build: ./apps/api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-trader}:${POSTGRES_PASSWORD:-trader}@db:5432/${POSTGRES_DB:-trader}
       REDIS_URL: redis://redis:6379/0
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./apps/api:/app
     # db: required: false -- the prod overlay disables db entirely (managed
     # Postgres instead) via profiles: ["never"], which removes it from the
     # merged project. depends_on entries merge per-key across -f files rather
@@ -62,8 +61,6 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-trader}:${POSTGRES_PASSWORD:-trader}@db:5432/${POSTGRES_DB:-trader}
       REDIS_URL: redis://redis:6379/0
-    volumes:
-      - ./apps/api:/app
     depends_on:
       db:
         condition: service_healthy
@@ -72,19 +69,7 @@ services:
         condition: service_healthy
 
   web:
-    image: node:20-alpine
-    working_dir: /app
-    command: sh -c "corepack enable && pnpm install && pnpm dev"
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./apps/web:/app
-      - web_node_modules:/app/node_modules
-    depends_on:
-      - api
+    build: ./apps/web
 
 volumes:
   pgdata:
-  web_node_modules:

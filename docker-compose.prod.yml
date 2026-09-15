@@ -73,10 +73,10 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?managed Postgres URL is required}
       REDIS_URL: redis://redis:6379/0
-    volumes: []        # the image is the artefact
-    # No host port: Caddy reaches this over the compose network. Binding it
-    # to the host as well would be a second, unprotected way in.
-    ports: []
+    # No bind mount, no host port: the base file sets neither (see
+    # docker-compose.yml), so the image is what runs, and Caddy reaches this
+    # over the compose network only -- a host binding would be a second,
+    # unprotected way in.
     depends_on:
       redis:
         condition: service_healthy
@@ -96,7 +96,6 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?managed Postgres URL is required}
       REDIS_URL: redis://redis:6379/0
-    volumes: []
     depends_on:
       redis:
         condition: service_healthy
@@ -123,18 +122,10 @@ services:
         NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?public API URL is required}
     image: tickortrade-web
     restart: unless-stopped
-    # The base file's working_dir: /app is for local dev, where the source
-    # is bind-mounted directly at /app with no apps/web nesting. That value
-    # merges straight through into this overlay unless overridden here --
-    # and the image's own WORKDIR (set to /app/web in the Dockerfile, where
-    # the standalone build's server.js actually lands) loses to it at
-    # container start, which is why `node server.js` resolved against /app
-    # and failed with "Cannot find module '/app/server.js'".
-    working_dir: /app/web
+    # No working_dir override needed: the base file no longer sets one (see
+    # docker-compose.yml), so the image's own WORKDIR /app/web -- where the
+    # standalone build's server.js actually lands -- applies uncontested.
     command: ["node", "server.js"]
-    environment: {}
-    volumes: []
-    ports: []
 
 volumes:
   redisdata:
