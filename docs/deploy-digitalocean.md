@@ -439,3 +439,45 @@ IMAGE_TAG=sha-<the-previous-sha> dc up -d --no-build
 Find the sha under the repository's Packages tab, or in the run log. Note that
 a migration already applied is not undone by this — rolling back code is safe,
 rolling back schema is not.
+
+---
+
+## Deploying without SSHing in yourself
+
+`.github/workflows/deploy.yml` runs the same pull-and-restart from a button
+under the repo's Actions tab (**deploy** → Run workflow), for when you don't
+want a terminal open. It never triggers on push — a system placing real
+broker orders should not redeploy itself the moment something merges, so this
+stays a deliberate click separate from `release.yml`'s automatic build.
+
+**One-time setup**, three repository secrets (Settings → Secrets and
+variables → Actions → Secrets):
+
+1. **Generate a dedicated key** — not your own `~/.ssh/id_ed25519`. If GitHub's
+   secret store is ever compromised, a key that only unlocks this one deploy
+   account is a much smaller loss than your personal droplet access:
+
+   ```bash
+   ssh-keygen -t ed25519 -C "github-actions-deploy" -f ./deploy_key -N ""
+   ```
+
+2. **Add the public half to the droplet**, as an *additional* key for
+   `deploy` (append, don't replace `~/.ssh/authorized_keys`):
+
+   ```bash
+   cat deploy_key.pub | ssh deploy@YOUR_RESERVED_IP 'cat >> ~/.ssh/authorized_keys'
+   ```
+
+3. **Add three secrets** on GitHub:
+
+   | Secret | Value |
+   |---|---|
+   | `DEPLOY_SSH_KEY` | the **private** half, `cat deploy_key` — the whole file, including the `BEGIN`/`END` lines |
+   | `DEPLOY_SSH_USER` | `deploy` |
+   | `DEPLOY_SSH_HOST` | your reserved IP |
+
+4. **Delete the local key files** once they're pasted in — `rm deploy_key deploy_key.pub`. Nothing on your machine needs to keep them; GitHub and the droplet's `authorized_keys` are now the only two places this key exists.
+
+Run it from Actions → **deploy** → **Run workflow**. Leave `image_tag` blank
+for `latest`, or set it to roll a specific build out (or back) without
+touching the terminal.
