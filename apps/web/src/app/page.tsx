@@ -16,6 +16,8 @@ export default function Home() {
     // here, and pasting the token required racing the redirect in dev tools.
     const params = new URLSearchParams(window.location.search);
     const apisession = params.get("apisession") ?? params.get("API_Session");
+    // eslint-disable-next-line no-console
+    console.debug("[breeze-redirect] root page search:", window.location.search, "apisession:", apisession);
     if (apisession) {
       router.replace(`/brokers?apisession=${encodeURIComponent(apisession)}`);
       return;
