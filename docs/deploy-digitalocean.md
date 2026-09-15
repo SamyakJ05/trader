@@ -22,10 +22,17 @@ week — so registering an address you then change costs you days.
 | Reserved IP | free while attached to a running droplet | $0 |
 | **Total** | | **$39.15** |
 
-The 2 GB droplet at $18 would also run this, but api (2 workers) + worker +
-web + Redis + Caddy leaves little headroom for a build, and `next build` is
-the memory-hungry step. Build on the droplet at 2 GB and you will meet the
-OOM killer.
+The tier below is $18 for 2 vCPU / 2 GB — the same two cores, six dollars less,
+and half the RAM. RAM is the constraint that decides it. Five containers run
+here (api with 2 workers, worker, web, Redis, Caddy) and `next build` is the
+memory-hungry step; building on the droplet at 2 GB meets the OOM killer.
+
+Premium Intel and Premium AMD are offered as toggles on the same Basic plans
+for a few dollars more, buying NVMe storage and newer CPUs. Not worth it here:
+this workload waits on Postgres round trips and broker HTTP, not on local disk.
+
+Transfer is 4 TB outbound on this tier, against an instance serving a handful
+of users with no media. It will not be close.
 
 Managed Postgres rather than a container is the one place worth paying for:
 it holds the audit log, the cash ledger and every fill, which is the only
