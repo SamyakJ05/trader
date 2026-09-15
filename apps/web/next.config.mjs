@@ -1,3 +1,5 @@
+import path from "node:path";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -7,12 +9,14 @@ const nextConfig = {
   // The app sits behind a reverse proxy holding TLS; this stops Next
   // advertising a version that tells an attacker what to target.
   poweredByHeader: false,
-  // Two lockfiles exist -- the workspace root's and this package's -- because
-  // the Docker build context is this directory and cannot reach the root one.
-  // Left to infer, Next picks whichever it finds first, which differs between
-  // a local build and the image build. Pin it to this package, which is what
-  // both actually build.
-  outputFileTracingRoot: import.meta.dirname,
+  // Pin to the pnpm workspace root (one level up), not this package: the
+  // Docker build now uses the repo root as its context so it can reach the
+  // one real lockfile there, and standalone's output layout depends on
+  // where tracing believes the workspace root is. Left to infer, Next
+  // guesses from the nearest lockfile, which differs between a local build
+  // (finds it immediately) and the image build (finds it one level up) if
+  // this isn't pinned explicitly.
+  outputFileTracingRoot: path.join(import.meta.dirname, ".."),
 };
 
 export default nextConfig;
