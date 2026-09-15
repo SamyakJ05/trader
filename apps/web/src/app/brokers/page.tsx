@@ -41,8 +41,6 @@ export default function BrokersPage() {
     // Hold the value until accounts have loaded, so it can be matched to the
     // right one rather than guessed at before the list exists.
     const apisession = params.get("apisession");
-    // eslint-disable-next-line no-console
-    console.debug("[breeze-redirect] url search:", window.location.search, "apisession:", apisession);
     if (apisession) setPendingApiSession(apisession);
     if (params.get("connected") || params.get("error") || apisession) {
       window.history.replaceState(null, "", "/brokers");
@@ -51,12 +49,8 @@ export default function BrokersPage() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.debug("[breeze-redirect] effect2 pendingApiSession:", pendingApiSession, "accounts:", accounts?.length);
     if (!pendingApiSession || !accounts) return;
     const breeze = accounts.filter((a) => a.broker === "icici_breeze");
-    // eslint-disable-next-line no-console
-    console.debug("[breeze-redirect] breeze accounts found:", breeze.length, breeze.map((a) => a.id));
     if (breeze.length === 1) {
       setTokenError(null);
       setTokenFor(breeze[0]);

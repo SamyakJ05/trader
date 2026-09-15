@@ -300,6 +300,67 @@ async def test_an_exchange_without_a_session_token_is_refused(monkeypatch):
         await a.exchange_session("api-session")
 
 
+# ── /customerdetails takes a different shape than every other endpoint ─
+# Breeze's docs: no checksum headers on this one, SessionToken/AppKey as
+# body fields instead. Sending it through the generic signed _request (empty
+# body, checksum headers attached) produced a live "Request Object is Null"
+# from Breeze — this pins the correct shape so it cannot regress silently.
+
+
+async def test_get_profile_sends_session_and_app_key_in_the_body(monkeypatch):
+    import fakeredis.aioredis
+
+    from app.adapters.icici_breeze import adapter as adapter_module
+
+    a = adapter(monkeypatch)
+    monkeypatch.setattr(
+        adapter_module, "get_redis", lambda: fakeredis.aioredis.FakeRedis(decode_responses=True)
+    )
+    captured = {}
+
+    async def fake_request(self, method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["headers"] = kwargs.get("headers")
+        captured["json"] = kwargs.get("json")
+        return FakeResponse({"Success": {"idirect_userid": "ICICI123", "idirect_user_name": "Someone"}})
+
+    import httpx
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+    profile = await a.get_profile()
+
+    assert captured["path"] == "/customerdetails"
+    assert captured["json"] == {"SessionToken": "sess-key", "AppKey": "app-key"}
+    assert captured["headers"] is None, (
+        "customerdetails takes no headers at all per Breeze's docs — sending "
+        "the checksum headers here is the bug this test exists to catch"
+    )
+    assert profile.broker_client_id == "ICICI123"
+
+
+async def test_get_profile_without_a_session_is_refused(monkeypatch):
+    a = adapter(monkeypatch, session=None, user_id=None)
+    with pytest.raises(SessionExpiredError, match="login flow"):
+        await a.get_profile()
+
+
+async def test_get_profile_surfaces_breezes_error_text(monkeypatch):
+    import fakeredis.aioredis
+
+    from app.adapters.icici_breeze import adapter as adapter_module
+
+    a = adapter(monkeypatch)
+    monkeypatch.setattr(
+        adapter_module, "get_redis", lambda: fakeredis.aioredis.FakeRedis(decode_responses=True)
+    )
+    patch_exchange(monkeypatch, {"Error": "Request Object is Null"}, status_code=200)
+
+    with pytest.raises(BrokerError, match="Request Object is Null"):
+        await a.get_profile()
+
+
 # ── the static IP requirement ────────────────────────────────────────
 # SEBI's algo framework confines the whitelisted-IP rule to the transactional
 # layer. Reads and streaming work from anywhere, which is what lets the

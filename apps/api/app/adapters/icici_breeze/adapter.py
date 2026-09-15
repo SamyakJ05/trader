@@ -259,11 +259,45 @@ class BreezeAdapter(BrokerAdapter):
     # ── account data (scaffold, unverified) ──────────────────────────
 
     async def get_profile(self) -> BrokerProfile:
-        data = await self._request("GET", "/customerdetails")
+        # /customerdetails is the one authenticated-looking endpoint that is
+        # not: Breeze's docs say it takes no headers at all, and expects
+        # SessionToken/AppKey as body fields instead of the signed-header
+        # scheme every other endpoint uses. Sending it through the generic
+        # _request — empty body, checksum headers attached — produces
+        # "Request Object is Null": Breeze parsing an empty body and finding
+        # neither field it actually wanted. exchange_session already got this
+        # right for the initial login; get_profile needs the same shape.
+        if not self.account.session_token_enc:
+            raise SessionExpiredError("No Breeze session; complete the login flow first")
+        session_key = decrypt_secret(self.account.session_token_enc)
+        # Still counts against the documented per-minute/per-day limits, same
+        # as every other endpoint — the exemption is from the checksum
+        # headers, not from the rate budget.
+        redis = get_redis()
+        limiter_key = self._session_key()
+        await breeze_limiter(redis, session_key=limiter_key).acquire()
+        try:
+            remaining = await breeze_quota(redis, session_key=limiter_key).take()
+        except DailyQuotaExceeded as exc:
+            raise BrokerError(str(exc)) from exc
+        if remaining < 100:
+            logger.warning("breeze_daily_quota_low", remaining=remaining, session=limiter_key)
+        async with httpx.AsyncClient(base_url=API_BASE, timeout=15) as client:
+            resp = await client.request(
+                "GET",
+                "/customerdetails",
+                json={"SessionToken": session_key, "AppKey": self.credentials.api_key},
+            )
+        data = resp.json()
+        if resp.status_code == 401:
+            raise SessionExpiredError("Breeze session rejected (401)")
+        if resp.status_code != 200 or not data.get("Success"):
+            raise BrokerError(f"Breeze error: {data.get('Error', data)}", raw=data)
+        success = data["Success"]
         return BrokerProfile(
-            broker_client_id=str(data.get("idirect_userid", "")),
-            name=data.get("idirect_user_name"),
-            raw=data if isinstance(data, dict) else {},
+            broker_client_id=str(success.get("idirect_userid", "")),
+            name=success.get("idirect_user_name"),
+            raw=success if isinstance(success, dict) else {},
         )
 
     async def get_funds(self) -> Funds:
