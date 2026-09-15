@@ -133,6 +133,90 @@ KITE_LIMITS = {
 }
 
 
+class DailyQuotaExceeded(Exception):
+    """Raised when a broker's daily call allowance is spent."""
+
+
+class DailyQuota:
+    """A per-day call counter, for brokers that cap calls per day as well as
+    per second.
+
+    Separate from the token bucket because it is a different kind of limit: a
+    bucket that refills cannot express "5000 and then nothing until tomorrow",
+    and silently spending the last of a daily allowance on a status poll would
+    leave nothing for an order.
+    """
+
+    def __init__(self, redis: aioredis.Redis, *, name: str, limit: int):
+        self._redis = redis
+        self._name = name
+        self._limit = limit
+
+    def key(self, day: str) -> str:
+        return f"quota:{self._name}:{day}"
+
+    async def take(self, cost: int = 1, *, day: str | None = None) -> int:
+        """Spend from today's allowance, or raise. Returns the remaining count."""
+        from datetime import datetime
+
+        from app.domain.calendar import IST
+
+        stamp = day or datetime.now(IST).date().isoformat()
+        key = self.key(stamp)
+        used = await self._redis.incrby(key, cost)
+        if used == cost:
+            # First call of the day: expire a little past midnight so the key
+            # cannot outlive the day it counts.
+            await self._redis.expire(key, 26 * 3600)
+        remaining = self._limit - used
+        if remaining < 0:
+            raise DailyQuotaExceeded(
+                f"{self._name} has spent its {self._limit} calls for {stamp}. "
+                "The allowance resets tomorrow."
+            )
+        return remaining
+
+    async def remaining(self, *, day: str | None = None) -> int:
+        from datetime import datetime
+
+        from app.domain.calendar import IST
+
+        stamp = day or datetime.now(IST).date().isoformat()
+        used = await self._redis.get(self.key(stamp))
+        return self._limit - int(used or 0)
+
+
+# ICICI Breeze publishes tighter limits than Kite, and both axes bind: a
+# per-minute rate and a per-day total. Verify against current docs before live
+# use; exceeding them is documented as blocking the account rather than
+# returning a retryable error.
+BREEZE_CALLS_PER_MINUTE = 100
+BREEZE_CALLS_PER_DAY = 5000
+
+
+def breeze_limiter(redis: aioredis.Redis, *, session_key: str) -> RateLimiter:
+    """Per-second pacing for Breeze, derived from its per-minute limit.
+
+    Keyed by session rather than app: Breeze documents its limits per user,
+    unlike Kite's per-application budget.
+    """
+    return RateLimiter(
+        redis,
+        name=f"breeze:{session_key}",
+        rate_per_second=BREEZE_CALLS_PER_MINUTE / 60,
+        # A minute's worth would let one burst spend the whole minute's
+        # allowance in a second; a quarter keeps some in reserve for an order
+        # that arrives while a sync is running.
+        burst=max(1, BREEZE_CALLS_PER_MINUTE // 4),
+    )
+
+
+def breeze_quota(redis: aioredis.Redis, *, session_key: str) -> DailyQuota:
+    return DailyQuota(
+        redis, name=f"breeze:{session_key}", limit=BREEZE_CALLS_PER_DAY
+    )
+
+
 def kite_limiter(redis: aioredis.Redis, *, api_key: str, category: str) -> RateLimiter:
     """A limiter for one Kite app and endpoint category.
 

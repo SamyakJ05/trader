@@ -164,3 +164,86 @@ async def test_an_idle_bucket_expires():
     lim = kite_limiter(r, api_key="abc", category="quote")
     await lim.acquire()
     assert await r.ttl(lim.key) > 0
+
+
+# ── Breeze: a per-minute rate and a per-day cap ──────────────────────
+# Breeze binds on both axes, and exceeding its limits is documented as
+# blocking the account rather than returning something retryable.
+
+
+async def test_breeze_paces_below_its_per_minute_limit():
+    from app.adapters.throttle import BREEZE_CALLS_PER_MINUTE, breeze_limiter
+
+    lim = breeze_limiter(redis(), session_key="sess")
+    assert lim._rate == BREEZE_CALLS_PER_MINUTE / 60
+
+
+async def test_breeze_burst_keeps_some_of_the_minute_in_reserve():
+    """A full minute's burst would let one sync spend the whole allowance in a
+    second, leaving nothing for an order arriving behind it."""
+    from app.adapters.throttle import BREEZE_CALLS_PER_MINUTE, breeze_limiter
+
+    lim = breeze_limiter(redis(), session_key="sess")
+    assert lim._burst < BREEZE_CALLS_PER_MINUTE
+
+
+async def test_breeze_limits_are_per_session_not_per_app():
+    """Breeze documents its limits per user, unlike Kite's per-application
+    budget — sharing one bucket across users would throttle them needlessly."""
+    from app.adapters.throttle import breeze_limiter
+
+    r = redis()
+    assert (
+        breeze_limiter(r, session_key="user-one").key
+        != breeze_limiter(r, session_key="user-two").key
+    )
+
+
+async def test_the_daily_quota_counts_down():
+    from app.adapters.throttle import DailyQuota
+
+    quota = DailyQuota(redis(), name="test", limit=10)
+    assert await quota.take() == 9
+    assert await quota.take(3) == 6
+    assert await quota.remaining() == 6
+
+
+async def test_the_daily_quota_refuses_once_spent():
+    """A bucket that refills cannot express 'this many and then nothing until
+    tomorrow', which is why this is a separate mechanism."""
+    from app.adapters.throttle import DailyQuota, DailyQuotaExceeded
+
+    quota = DailyQuota(redis(), name="test", limit=3)
+    await quota.take(3)
+    with pytest.raises(DailyQuotaExceeded):
+        await quota.take()
+
+
+async def test_the_daily_quota_is_per_day():
+    from app.adapters.throttle import DailyQuota
+
+    r = redis()
+    quota = DailyQuota(r, name="test", limit=5)
+    await quota.take(5, day="2026-09-15")
+    assert await quota.remaining(day="2026-09-16") == 5
+
+
+async def test_the_daily_quota_key_cannot_outlive_its_day():
+    """A counter left behind would silently eat into the next day's
+    allowance."""
+    from app.adapters.throttle import DailyQuota
+
+    r = redis()
+    quota = DailyQuota(r, name="test", limit=5)
+    await quota.take(day="2026-09-15")
+    assert 0 < await r.ttl(quota.key("2026-09-15")) <= 26 * 3600
+
+
+async def test_the_quota_message_says_when_it_resets():
+    """An operator seeing this needs to know whether to wait minutes or hours."""
+    from app.adapters.throttle import DailyQuota, DailyQuotaExceeded
+
+    quota = DailyQuota(redis(), name="test", limit=1)
+    await quota.take()
+    with pytest.raises(DailyQuotaExceeded, match="resets tomorrow"):
+        await quota.take()

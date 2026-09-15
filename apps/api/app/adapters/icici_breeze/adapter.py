@@ -13,7 +13,9 @@ Auth model:
    headers X-Checksum: "token {checksum}", X-Timestamp, X-AppKey, X-SessionToken.
 
 Documented limits (verify current numbers): 100 calls/min, 5000/day per user.
-The adapter enforces a soft local rate guard via Redis in the service layer.
+Both are enforced client-side in _request, per credential ref, because Breeze
+documents its limits per user and exceeding them blocks the account rather
+than returning a retryable error.
 """
 
 import hashlib
@@ -31,6 +33,9 @@ from app.adapters.base import (
     FeatureNotSupportedError,
     SessionExpiredError,
 )
+from app.adapters.throttle import DailyQuotaExceeded, breeze_limiter, breeze_quota
+from app.core.logging import get_logger
+from app.core.redis import get_redis
 from app.core.security import decrypt_secret
 from app.domain.enums import Broker, Exchange, OrderStatus, OrderSide, OrderType, ProductType
 from app.domain.models import (
@@ -44,6 +49,8 @@ from app.domain.models import (
     PlaceOrderResult,
     Tick,
 )
+
+logger = get_logger(__name__)
 
 API_BASE = "https://api.icicidirect.com/breezeapi/api/v1"
 LOGIN_BASE = "https://api.icicidirect.com/apiuser/login"
@@ -111,8 +118,31 @@ class BreezeAdapter(BrokerAdapter):
             "X-SessionToken": decrypt_secret(self.account.session_token_enc),
         }
 
+    def _session_key(self) -> str:
+        """Identifies whose allowance this call spends.
+
+        Breeze documents its limits per user, so the bucket is keyed by
+        credential ref rather than by application.
+        """
+        return (self.account.credential_ref or str(self.account.id)).upper()
+
     async def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         body = body or {}
+        # Breeze binds on two axes: a per-minute rate and a per-day total.
+        # Exceeding them is documented as blocking the account rather than
+        # returning something retryable, so both are enforced before the call
+        # rather than reacted to afterwards.
+        redis = get_redis()
+        session_key = self._session_key()
+        await breeze_limiter(redis, session_key=session_key).acquire()
+        try:
+            remaining = await breeze_quota(redis, session_key=session_key).take()
+        except DailyQuotaExceeded as exc:
+            raise BrokerError(str(exc)) from exc
+        if remaining < 100:
+            logger.warning(
+                "breeze_daily_quota_low", remaining=remaining, session=session_key
+            )
         headers = self._signed_headers(body)
         async with httpx.AsyncClient(base_url=API_BASE, timeout=15) as client:
             resp = await client.request(
