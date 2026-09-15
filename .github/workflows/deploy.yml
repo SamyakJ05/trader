@@ -1,0 +1,49 @@
+# Manual deploy button. Pulls the images release.yml already published and
+# restarts the droplet's stack over SSH. Never auto-triggers on push -- a
+# system placing real broker orders should not redeploy itself the moment
+# someone merges, so this stays a deliberate, one-click act separate from CI.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (blank = latest)'
+        required: false
+        default: ''
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Deploy over SSH
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new \
+              "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+              "cd ~/trader && \
+               git fetch origin && git checkout main && git pull origin main && \
+               ${IMAGE_TAG:+export IMAGE_TAG=$IMAGE_TAG &&} \
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.registry.yml pull && \
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.registry.yml up -d --no-build && \
+               docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.registry.yml exec -T api alembic upgrade head"
+
+      - name: Verify it's actually serving
+        run: |
+          # A container reporting "Up" is not the same as the app inside it
+          # working -- readyz is what /healthz never checks: db, redis and
+          # the worker's heartbeat all agreeing something is wrong here.
+          for i in 1 2 3 4 5; do
+            if curl -fsS https://tickortrade.online/api/v1/readyz | grep -q '"status":"ok"'; then
+              echo "readyz: ok"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "readyz did not report ok after the deploy -- check the droplet" >&2
+          exit 1
