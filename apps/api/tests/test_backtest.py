@@ -258,3 +258,42 @@ def test_metrics_annualise_using_the_bar_interval():
     assert daily["risk_metrics"]["periods_per_year"] == 250
     assert minute["risk_metrics"]["periods_per_year"] == 250 * 375
     assert daily["risk_metrics"]["sharpe_ratio"] != minute["risk_metrics"]["sharpe_ratio"]
+
+
+def test_a_backtest_charges_as_the_broker_it_names():
+    """Defaulting to paper charges statutory costs but no broker's cut, which
+    flatters any strategy meant for a real account. ICICI's percentage
+    brokerage alone is Rs 440 on a Rs 1 lakh delivery round trip."""
+    from app.domain.enums import Broker
+
+    candles = bars([1000] * 12, [1000] * 12)
+    paper = run_backtest(
+        BuyThenSell(), candles, symbol="RELIANCE", product="CNC",
+        initial_cash=D("1000000"), params=dict(quantity=100),
+    )
+    icici = run_backtest(
+        BuyThenSell(), candles, symbol="RELIANCE", product="CNC",
+        initial_cash=D("1000000"), params=dict(quantity=100),
+        broker=Broker.ICICI_BREEZE,
+    )
+    assert D(icici["total_charges"]) > D(paper["total_charges"])
+
+
+def test_a_result_records_whose_costs_produced_it():
+    """Rates and plans change. A stored result that cannot name its cost basis
+    cannot be compared against one run later."""
+    from app.domain.enums import Broker
+
+    result = run_backtest(
+        BuyThenSell(), bars([100, 101, 102], [101, 102, 103]), symbol="RELIANCE",
+        initial_cash=D("100000"), broker=Broker.ICICI_BREEZE,
+    )
+    assert result["broker"] == "icici_breeze"
+
+
+def test_the_default_broker_is_paper_and_says_so():
+    result = run_backtest(
+        BuyThenSell(), bars([100, 101, 102], [101, 102, 103]), symbol="RELIANCE",
+        initial_cash=D("100000"),
+    )
+    assert result["broker"] == "paper"

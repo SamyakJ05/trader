@@ -41,7 +41,15 @@ def run_backtest(
     initial_cash=Decimal("1000000"),
     params=None,
     interval="1d",
+    broker=Broker.PAPER,
 ):
+    """`broker` decides whose brokerage the simulated fills pay.
+
+    Defaulting to PAPER charges statutory costs but no broker's cut, which
+    flatters any strategy meant for a real account — ICICI's percentage
+    brokerage alone is Rs 440 on a Rs 1 lakh delivery round trip. Pass the
+    broker the strategy would actually trade through.
+    """
     if isinstance(impl, AsyncStrategyBase):
         raise ValueError(
             "AI/async strategies require recorded historical decisions and are not replayable"
@@ -95,7 +103,7 @@ def run_backtest(
             if crossed_cutoff or new_day:
                 qty = quantity
                 cost = compute_charges(
-                    broker=Broker.PAPER,
+                    broker=broker,
                     side=OrderSide.SELL,
                     product=product,
                     quantity=qty,
@@ -166,7 +174,7 @@ def run_backtest(
                 product == ProductType.CNC and side == OrderSide.SELL and day not in dp_days
             )
             cost = compute_charges(
-                broker=Broker.PAPER,
+                broker=broker,
                 side=side,
                 product=product,
                 quantity=qty,
@@ -252,6 +260,10 @@ def run_backtest(
         limitations=LIMITATIONS,
         # Return and win rate alone cannot distinguish a steady climb from a
         # violent one, nor a high win rate that loses money.
+        # Recorded so a stored result says whose costs produced it. Rates and
+        # plans change, and a result that cannot name its cost basis cannot be
+        # compared against one run later.
+        broker=str(getattr(broker, "value", broker)),
         risk_metrics=summarise_metrics(
             equity_curve=[Decimal(point["equity"]) for point in curve],
             interval=interval,

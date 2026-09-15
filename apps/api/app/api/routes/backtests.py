@@ -11,6 +11,7 @@ from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from app.core.deps import DbSession, VerifiedUser
+from app.domain.enums import Broker
 from app.db.models import BacktestRun, Candle
 from app.domain.calendar import CalendarUnavailable
 from app.engines.backtest import run_backtest
@@ -34,6 +35,11 @@ class BacktestBody(BaseModel):
     fast: int = Field(default=5, ge=1, le=1000)
     slow: int = Field(default=20, ge=2, le=2000)
     quantity: int = Field(default=1, ge=1, le=100000)
+    # Whose brokerage the simulated fills pay. Defaulting to paper charges
+    # statutory costs but no broker's cut, which flatters a strategy meant for
+    # a real account: ICICI's percentage brokerage alone is Rs 440 on a Rs 1
+    # lakh delivery round trip, against Zerodha's nothing.
+    broker: Literal["paper", "zerodha", "icici_breeze", "groww"] = "paper"
 
     @model_validator(mode="after")
     def validate_range(self):
@@ -96,6 +102,7 @@ async def create_backtest(body: BacktestBody, user: VerifiedUser, db: DbSession)
             # to reach them: scoring minute bars as daily understates Sharpe by
             # roughly twenty times.
             interval=body.interval,
+            broker=Broker(body.broker),
         )
     except (ValueError, CalendarUnavailable) as exc:
         raise HTTPException(422, str(exc)) from exc

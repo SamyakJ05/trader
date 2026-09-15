@@ -6,7 +6,7 @@ import { Button, Card, PageHeader } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 
-type Config = { symbol: string; interval: string; source: string; product: string };
+type Config = { symbol: string; interval: string; source: string; product: string; broker?: string };
 type Summary = { id: string; created_at: string; config: Config; total_return: string };
 type RiskMetrics = {
   annualised_return: string | null; sharpe_ratio: string | null; sortino_ratio: string | null;
@@ -18,7 +18,7 @@ type RiskMetrics = {
 type Run = { id: string; config: Config; results: {
   total_return: string; max_drawdown: string; win_rate: number; trade_count: number;
   total_charges: string; final_equity: string; open_quantity: number; rejected_signals: number;
-  candle_count: number; source: string; limitations: string[]; square_offs?: number;
+  candle_count: number; source: string; broker?: string; limitations: string[]; square_offs?: number;
   unfilled_final_signals?: number; data_sha256?: string; risk_metrics?: RiskMetrics;
   equity_curve: { ts: string; equity: string }[];
 } };
@@ -73,6 +73,7 @@ export default function BacktestsPage() {
       <p className="mb-4 text-sm text-ink-dim">Import historical candles before running a replay. Simulator and Yahoo data stay separate. AI strategy replay is unavailable.</p>
       <form onSubmit={submit} className="grid gap-4 sm:grid-cols-3">
         <label>Symbol<input name="symbol" defaultValue="RELIANCE" required className="mt-1 block w-full rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm focus:border-accent focus:outline-none" /></label>
+        <label>Costs<select name="broker" className="mt-1 block w-full rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm focus:border-accent focus:outline-none"><option value="paper">Paper (statutory only, no brokerage)</option><option value="icici_breeze">ICICI Direct</option><option value="zerodha">Zerodha</option></select></label>
         <label>Source<select name="source" className="mt-1 block w-full rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm focus:border-accent focus:outline-none"><option value="yfinance_unadjusted">Yahoo (unadjusted)</option><option value="simulator">Simulator</option></select></label>
         <label>Interval<select name="interval" className="mt-1 block w-full rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm focus:border-accent focus:outline-none"><option value="1d">Daily</option><option value="5m">5 minutes</option><option value="1m">1 minute</option></select></label>
         <label>Start date (IST)<input name="start" type="date" required className="mt-1 block w-full rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm focus:border-accent focus:outline-none" /></label>
@@ -89,7 +90,18 @@ export default function BacktestsPage() {
     {run && <div className="mt-5 space-y-4">
       <Card>
         <h2 className="mb-3 text-lg font-semibold">{run.config.symbol} · {run.config.product} · {run.config.interval}</h2>
-        <p className="mb-4 text-sm text-ink-dim">{run.results.candle_count.toLocaleString()} candles · {run.results.source}</p>
+        <p className="mb-4 text-sm text-ink-dim">
+          {run.results.candle_count.toLocaleString()} candles · {run.results.source}
+          {run.results.broker ? ` · costed as ${run.results.broker}` : ""}
+        </p>
+        {run.results.broker === "paper" && (
+          <p className="mb-4 rounded-lg border border-warn/30 bg-warn/10 p-3 text-sm text-warn">
+            Costed as paper: statutory charges only, no brokerage. A real
+            account pays its broker too — on ICICI Direct that is 0.22% of a
+            delivery trade, which is Rs 440 on a Rs 1 lakh round trip. Re-run
+            against your broker before trusting these numbers.
+          </p>
+        )}
         <dl className="grid grid-cols-2 gap-4 md:grid-cols-3">
           {[["Total return", percent(run.results.total_return)], ["Max drawdown", percent(run.results.max_drawdown)],
             ["Win rate (closed trades)", percent(run.results.win_rate)], ["Closed trades", run.results.trade_count],
