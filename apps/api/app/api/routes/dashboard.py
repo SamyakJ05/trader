@@ -22,7 +22,7 @@ from app.db.models import (
     Position,
     Strategy,
 )
-from app.domain.enums import OrderStatus
+from app.domain.enums import Broker, OrderStatus
 from app.engines.paper import ledger
 from app.services import killswitch
 
@@ -79,7 +79,20 @@ async def dashboard_summary(user: VerifiedUser, db: DbSession):
     funds_total = Decimal("0")
     funds_known = True
     for a in accounts:
-        if a.environment == "paper":
+        # broker == "paper" is the platform's own simulator, an entirely
+        # separate signal from environment == "paper" (a real broker account
+        # can sit in paper environment throughout Breeze/Zerodha verification
+        # and still hold real synced data). Branching on environment here
+        # routed a real, correctly-synced Breeze account through
+        # ledger.get_cash() instead of its own FundsSnapshot. It happened to
+        # show the right number anyway right now -- get_cash() itself falls
+        # back to the latest FundsSnapshot when no CashLedger rows exist yet
+        # (confirmed: this account has none) -- but that fallback breaks the
+        # moment any paper trade is placed on this account, at which point it
+        # would silently start showing stale ledger data instead of a real
+        # broker's actual funds. Reading the real function before asserting
+        # this the first time would have caught the wrong initial claim here.
+        if a.broker == Broker.PAPER.value:
             entry = await ledger.latest(db, a.id)
             funds = SimpleNamespace(
                 available_cash=await ledger.get_cash(db, a.id),

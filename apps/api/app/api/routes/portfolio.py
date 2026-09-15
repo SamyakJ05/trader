@@ -15,7 +15,7 @@ from app.db.models import (
     PendingSettlement,
     Position,
 )
-from app.domain.enums import Environment
+from app.domain.enums import Broker, Environment
 from app.engines.paper import ledger, market_sim
 from app.services import brokers as broker_service
 
@@ -27,7 +27,10 @@ async def funds(user: VerifiedUser, db: DbSession, account_id: uuid.UUID):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
-    if account.environment == "paper":
+    # broker, not environment: a real broker account sits in paper
+    # environment throughout verification and still holds real synced funds.
+    # See dashboard.py's summary() for the live case this missed.
+    if account.broker == Broker.PAPER.value:
         entry = await ledger.latest(db, account_id)
         return {
             "available_cash": str(await ledger.get_cash(db, account_id)),
@@ -90,7 +93,9 @@ async def holdings(user: VerifiedUser, db: DbSession, account_id: uuid.UUID):
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
-    if account.environment == "paper":
+    # broker, not environment -- see /funds above and dashboard.py's
+    # summary() for why this specific check matters here.
+    if account.broker == Broker.PAPER.value:
         rows = (
             (
                 await db.execute(
