@@ -1,0 +1,157 @@
+"""ICICI Breeze adapter.
+
+Breeze differs from Kite in ways a Kite-first adapter gets silently wrong: the
+session header is a base64 credential pair rather than a token, its product
+vocabulary is not Kite's, and its API has no market order at all. These tests
+pin the differences.
+
+Nothing here reaches the network; the adapter is still SCAFFOLD.
+"""
+
+import base64
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+
+from app.adapters.base import BrokerError, FeatureNotSupportedError, SessionExpiredError
+from app.adapters.icici_breeze.adapter import BreezeAdapter
+from app.core.config import BrokerEnvCredentials
+from app.domain.enums import Exchange, OrderSide, OrderType, ProductType, Validity
+from app.domain.models import OrderRequest
+
+
+def account(session="plain:sess-key", user_id="ICICI123"):
+    return SimpleNamespace(
+        id="acct", broker="icici_breeze", credential_ref="BREEZE_MAIN",
+        session_token_enc=session, broker_client_id=user_id, environment="paper",
+    )
+
+
+def adapter(monkeypatch, **kw):
+    monkeypatch.setenv("BREEZE_MAIN_API_KEY", "app-key")
+    monkeypatch.setenv("BREEZE_MAIN_API_SECRET", "secret")
+    return BreezeAdapter(account(**kw), BrokerEnvCredentials("BREEZE_MAIN"))
+
+
+def order(product=ProductType.CNC, order_type=OrderType.LIMIT, price=Decimal("2845.50"), **kw):
+    defaults = dict(
+        symbol="RELIND", exchange=Exchange.NSE, side=OrderSide.BUY,
+        order_type=order_type, product=product, quantity=10, price=price,
+        validity=Validity.DAY,
+    )
+    defaults.update(kw)
+    return OrderRequest(**defaults)
+
+
+# ── the session header ───────────────────────────────────────────────
+
+
+def test_the_session_header_is_a_base64_credential_pair(monkeypatch):
+    """Breeze wants base64(user_id:session_key), the way HTTP Basic encodes a
+    pair. Sending the token verbatim — which a Kite-shaped adapter would —
+    fails every authenticated call, and the error does not say why."""
+    headers = adapter(monkeypatch)._signed_headers({})
+    decoded = base64.b64decode(headers["X-SessionToken"]).decode()
+    assert decoded == "ICICI123:sess-key"
+
+
+def test_signing_without_a_user_id_is_refused(monkeypatch):
+    """The user id comes from the session exchange. Without it no request can
+    be signed, and saying so beats an opaque 401."""
+    with pytest.raises(SessionExpiredError, match="user id"):
+        adapter(monkeypatch, user_id=None)._signed_headers({})
+
+
+def test_the_checksum_covers_timestamp_body_and_secret(monkeypatch):
+    import hashlib
+
+    a = adapter(monkeypatch)
+    headers = a._signed_headers({"a": 1})
+    expected = hashlib.sha256(
+        (headers["X-Timestamp"] + '{"a":1}' + "secret").encode()
+    ).hexdigest()
+    assert headers["X-Checksum"] == f"token {expected}"
+
+
+def test_the_timestamp_has_the_exact_shape_breeze_expects(monkeypatch):
+    """Truncated to seconds with a literal .000Z — not real milliseconds.
+    A different shape changes the checksum input and fails authentication."""
+    stamp = adapter(monkeypatch)._signed_headers({})["X-Timestamp"]
+    assert stamp.endswith(".000Z") and len(stamp) == 24
+
+
+# ── products ─────────────────────────────────────────────────────────
+
+
+def test_delivery_maps_to_cash(monkeypatch):
+    body = adapter(monkeypatch)._order_body(order(product=ProductType.CNC), "cli-1")
+    assert body["product"] == "cash"
+
+
+def test_intraday_is_refused_rather_than_sent_as_delivery(monkeypatch):
+    """Breeze has no cash-segment intraday product. Sending MIS as delivery
+    would turn an intraday trade into one that settles and must be funded —
+    a different trade from the one requested."""
+    with pytest.raises(FeatureNotSupportedError, match="intraday"):
+        adapter(monkeypatch)._order_body(order(product=ProductType.MIS), "cli-1")
+
+
+# ── order types ──────────────────────────────────────────────────────
+
+
+def test_a_market_order_is_refused(monkeypatch):
+    """Breeze's API takes only limit and stoploss. Their SDK fakes a market
+    order with a client-computed aggressive limit price; substituting that
+    silently would place a different order from the one asked for."""
+    with pytest.raises(FeatureNotSupportedError, match="market order"):
+        adapter(monkeypatch)._order_body(
+            order(order_type=OrderType.MARKET, price=None), "cli-1"
+        )
+
+
+def test_a_priceless_order_is_refused_at_the_adapter_too(monkeypatch):
+    """OrderRequest already rejects a LIMIT order with no price, so this guard
+    is a backstop rather than the first line. It matters because every Breeze
+    order is a limit order: a product or order type that reached here without
+    a price would otherwise be sent priced as an empty string."""
+    priceless = SimpleNamespace(
+        symbol="RELIND", exchange=Exchange.NSE, side=OrderSide.BUY,
+        order_type=OrderType.LIMIT, product=ProductType.CNC, quantity=10,
+        price=None, trigger_price=None, validity=Validity.DAY,
+    )
+    with pytest.raises(BrokerError, match="price"):
+        adapter(monkeypatch)._order_body(priceless, "cli-1")
+
+
+def test_a_stoploss_order_carries_its_trigger(monkeypatch):
+    body = adapter(monkeypatch)._order_body(
+        order(order_type=OrderType.SL, trigger_price=Decimal("2800")), "cli-1"
+    )
+    assert body["order_type"] == "stoploss"
+    assert body["stoploss"] == "2800"
+
+
+# ── payload shape ────────────────────────────────────────────────────
+
+
+def test_the_payload_uses_breeze_field_names(monkeypatch):
+    body = adapter(monkeypatch)._order_body(order(), "cli-1")
+    assert body["stock_code"] == "RELIND"
+    assert body["exchange_code"] == "NSE"
+    assert body["action"] == "buy"
+    assert body["quantity"] == "10"
+
+
+def test_numbers_are_sent_as_strings(monkeypatch):
+    """Breeze's SDK sends every numeric field as a string; sending real
+    numbers changes the serialized body and therefore the checksum."""
+    body = adapter(monkeypatch)._order_body(order(), "cli-1")
+    assert all(isinstance(body[k], str) for k in ("quantity", "price"))
+
+
+def test_user_remark_carries_our_client_order_id(monkeypatch):
+    """A label, not an idempotency key — nothing in Breeze treats it as one,
+    so our own per-account uniqueness stays the only duplicate guard."""
+    body = adapter(monkeypatch)._order_body(order(), "client-order-abc")
+    assert body["user_remark"].startswith("client-order-abc"[:20])

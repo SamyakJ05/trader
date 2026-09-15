@@ -18,6 +18,7 @@ documents its limits per user and exceeding them blocks the account rather
 than returning a retryable error.
 """
 
+import base64
 import hashlib
 import json
 from collections.abc import AsyncIterator
@@ -64,7 +65,36 @@ _STATUS_MAP = {
     "Partially Executed": OrderStatus.PARTIALLY_FILLED,
 }
 
-_PRODUCT_MAP = {ProductType.CNC: "cash", ProductType.MIS: "margin", ProductType.NRML: "futures"}
+# Breeze's product vocabulary is not Kite's and does not map cleanly onto it.
+# Its documented values are futures, options, cash, mtf and btst — there is no
+# "margin", and no cash-segment intraday product equivalent to Kite's MIS.
+# MIS is therefore refused rather than silently sent as delivery, which would
+# turn an intraday trade into one that settles and has to be funded.
+_PRODUCT_MAP = {
+    ProductType.CNC: "cash",
+    ProductType.NRML: "futures",
+}
+
+_UNSUPPORTED_PRODUCT = {
+    ProductType.MIS: (
+        "Breeze has no cash-segment intraday product equivalent to MIS. "
+        "Place this as CNC (delivery) or use a product Breeze supports; "
+        "sending it as delivery silently would change what the trade is."
+    ),
+}
+
+# Breeze's backing API accepts only limit and stoploss. Their own SDK fakes a
+# market order by fetching a quote and computing an aggressive limit price
+# client-side. We refuse instead: an "aggressive limit" derived from a quote we
+# would have to fetch is a different order from the one the caller asked for,
+# and quietly substituting it is not ours to decide.
+_ORDER_TYPE_MAP = {
+    OrderType.LIMIT: "limit",
+    OrderType.SL: "stoploss",
+    OrderType.SL_M: "stoploss",
+}
+
+_VALIDITY_MAP = {"DAY": "day", "IOC": "ioc"}
 
 
 class BreezeAdapter(BrokerAdapter):
@@ -79,7 +109,13 @@ class BreezeAdapter(BrokerAdapter):
         return {"login_url": self.login_url(), "flow": "redirect"}
 
     async def exchange_session(self, api_session: str) -> dict:
-        """Exchange the apisession value from the redirect for a session token."""
+        """Exchange the API_Session value from the redirect for a session token.
+
+        Deliberately unsigned: this is the one Breeze call that does not carry
+        the checksum headers, because the session it establishes is what those
+        headers are built from. It also returns the user id, which every later
+        request needs — the signature pairs it with the session key.
+        """
         async with httpx.AsyncClient(timeout=15) as client:
             # Breeze uses GET-with-body; httpx's .get() helper rejects json,
             # so build the request explicitly.
@@ -91,7 +127,12 @@ class BreezeAdapter(BrokerAdapter):
         data = resp.json()
         if resp.status_code != 200 or not data.get("Success"):
             raise BrokerError(f"Breeze session exchange failed: {data}", raw=data)
-        return data["Success"]  # contains session_token
+        success = data["Success"]
+        # Keep the user id: without it no later request can be signed.
+        user_id = success.get("idirect_userid")
+        if user_id:
+            self.account.broker_client_id = str(user_id)
+        return success
 
     async def refresh_session(self) -> dict:
         try:
@@ -115,8 +156,23 @@ class BreezeAdapter(BrokerAdapter):
             "X-Checksum": f"token {checksum}",
             "X-Timestamp": timestamp,
             "X-AppKey": self.credentials.api_key or "",
-            "X-SessionToken": decrypt_secret(self.account.session_token_enc),
+            # NOT the raw session token. Breeze expects
+            # base64(user_id + ":" + session_key), the way HTTP Basic encodes a
+            # credential pair. Sending the token verbatim fails every
+            # authenticated call, and the error does not say why.
+            "X-SessionToken": self._session_header(),
         }
+
+    def _session_header(self) -> str:
+        session_key = decrypt_secret(self.account.session_token_enc)
+        user_id = self.account.broker_client_id
+        if not user_id:
+            raise SessionExpiredError(
+                "Breeze needs the account's user id to sign requests; "
+                "re-run the session exchange so it is stored"
+            )
+        pair = f"{user_id}:{session_key}".encode("ascii")
+        return base64.b64encode(pair).decode("ascii")
 
     def _session_key(self) -> str:
         """Identifies whose allowance this call spends.
@@ -224,18 +280,96 @@ class BreezeAdapter(BrokerAdapter):
 
     # ── trading: blocked until verified against real account ────────
 
+    def _order_body(self, request: OrderRequest, client_order_id: str) -> dict:
+        """Breeze's order payload. Field names follow their SDK's own
+        place_order, which is the closest thing to ground truth."""
+        refusal = _UNSUPPORTED_PRODUCT.get(request.product)
+        if refusal:
+            raise FeatureNotSupportedError(refusal)
+        product = _PRODUCT_MAP.get(request.product)
+        if product is None:
+            raise FeatureNotSupportedError(
+                f"Breeze has no product mapping for {request.product.value}"
+            )
+        order_type = _ORDER_TYPE_MAP.get(request.order_type)
+        if order_type is None:
+            raise FeatureNotSupportedError(
+                f"Breeze does not accept {request.order_type.value} orders. "
+                "Its API takes only limit and stoploss; a market order would "
+                "have to be sent as an aggressive limit, which is a different "
+                "order from the one requested."
+            )
+        if request.price is None:
+            raise BrokerError("Breeze requires a price: every order is a limit order")
+
+        body = {
+            "stock_code": request.symbol,
+            "exchange_code": request.exchange.value,
+            "product": product,
+            "action": request.side.value.lower(),
+            "order_type": order_type,
+            "quantity": str(request.quantity),
+            "price": str(request.price),
+            "validity": _VALIDITY_MAP.get(request.validity.value, "day"),
+            # A label, not an idempotency key. Nothing in Breeze's SDK or docs
+            # treats user_remark as one, so the platform's own idempotency
+            # (client_order_id, unique per account) remains the only guard
+            # against a duplicate order.
+            "user_remark": client_order_id[:20],
+        }
+        if request.trigger_price is not None:
+            body["stoploss"] = str(request.trigger_price)
+        return body
+
     async def place_order(self, request: OrderRequest, client_order_id: str) -> PlaceOrderResult:
-        # TODO(breeze-live): POST /order with user_remark as idempotency hook.
-        # Payload drafted per docs but unverified; refusing to send real orders.
-        raise FeatureNotSupportedError(
-            "Breeze order placement is scaffolded but unverified — refusing to send"
+        # TODO(breeze-live-verification): payload follows Breeze's SDK but has
+        # never been sent to their API. The live gate keeps this unreachable
+        # until an operator verifies it against their own account.
+        body = self._order_body(request, client_order_id)
+        data = await self._request("POST", "/order", body)
+        broker_order_id = data.get("order_id")
+        if not broker_order_id:
+            raise BrokerError("Breeze accepted the order without returning an id", raw=data)
+        return PlaceOrderResult(
+            broker_order_id=str(broker_order_id),
+            status=OrderStatus.SUBMITTED,
+            raw=data,
         )
 
     async def modify_order(self, broker_order_id: str, request: OrderRequest) -> PlaceOrderResult:
-        raise FeatureNotSupportedError("Breeze modify_order scaffolded but unverified")
+        order_type = _ORDER_TYPE_MAP.get(request.order_type)
+        if order_type is None:
+            raise FeatureNotSupportedError(
+                f"Breeze does not accept {request.order_type.value} orders"
+            )
+        body = {
+            "order_id": str(broker_order_id),
+            "exchange_code": request.exchange.value,
+            "order_type": order_type,
+            "quantity": str(request.quantity),
+            "price": str(request.price) if request.price is not None else "",
+            "validity": _VALIDITY_MAP.get(request.validity.value, "day"),
+        }
+        if request.trigger_price is not None:
+            body["stoploss"] = str(request.trigger_price)
+        data = await self._request("PUT", "/order", body)
+        return PlaceOrderResult(
+            broker_order_id=str(broker_order_id),
+            status=OrderStatus.OPEN,
+            raw=data,
+        )
 
     async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
-        raise FeatureNotSupportedError("Breeze cancel_order scaffolded but unverified")
+        data = await self._request(
+            "DELETE",
+            "/order",
+            {"order_id": str(broker_order_id), "exchange_code": Exchange.NSE.value},
+        )
+        return PlaceOrderResult(
+            broker_order_id=str(broker_order_id),
+            status=OrderStatus.CANCELLED,
+            raw=data,
+        )
 
     async def get_instruments(self, exchange: str | None = None) -> list[Instrument]:
         # Breeze distributes a security master file; TODO(verify current URL).
