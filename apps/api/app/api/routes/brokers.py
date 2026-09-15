@@ -52,6 +52,8 @@ class AccountOut(BaseModel):
     broker_client_id: str | None
     adapter_status: str
     # Masked metadata only — secret material never leaves the backend.
+    # credentials.session_expires_at already carries the field a session-
+    # expiry banner needs; no separate top-level field required.
     credentials: dict
 
 

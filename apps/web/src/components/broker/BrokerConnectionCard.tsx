@@ -22,6 +22,21 @@ export type AccountAction =
   | "toggle-live"
   | "delete";
 
+// Brokers like Breeze have no programmatic session refresh — the session
+// dies on the broker's own schedule (Breeze: midnight IST or 24h from issue,
+// whichever first, per SEBI's daily-reset rule) regardless of whether
+// anything here notices. This is the difference between finding that out
+// when the next order silently fails, and finding it out with time to log
+// in again first.
+const SESSION_WARNING_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function formatTimeRemaining(ms: number): string {
+  const hours = Math.floor(ms / (60 * 60 * 1000));
+  const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${Math.max(minutes, 1)}m`;
+}
+
 function credentialWarning(account: BrokerAccount): string | null {
   if (account.broker === "paper") return null;
   const c = account.credentials;
@@ -31,8 +46,14 @@ function credentialWarning(account: BrokerAccount): string | null {
   if (account.broker !== "zerodha" && !c.session_token_configured && !c.env_access_token_configured) {
     return "No session/access token configured — use “Set token”.";
   }
-  if (c.session_expires_at && new Date(c.session_expires_at) < new Date()) {
-    return "Stored session token has expired — reconnect or set a new token.";
+  if (c.session_expires_at) {
+    const remaining = new Date(c.session_expires_at).getTime() - Date.now();
+    if (remaining <= 0) {
+      return "Session expired — log in to resume trading.";
+    }
+    if (remaining <= SESSION_WARNING_WINDOW_MS) {
+      return `Breeze session expires in ${formatTimeRemaining(remaining)} — no automatic refresh, log in again before it lapses.`;
+    }
   }
   return null;
 }
