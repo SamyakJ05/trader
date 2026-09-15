@@ -108,7 +108,7 @@ export default function AdminPage() {
             Operator
           </label>
           <Button type="submit" variant="primary" disabled={busy}>
-            {busy ? "…" : "Send invite"}
+            {busy ? "Sending…" : "Send invite"}
           </Button>
         </form>
         <p className="mt-3 text-sm text-ink-faint">

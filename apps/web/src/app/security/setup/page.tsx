@@ -148,7 +148,7 @@ export default function TotpSetupPage() {
                 required
               />
               <Button type="submit" variant="primary" disabled={busy}>
-                {busy ? "…" : "Enable"}
+                {busy ? "Enabling…" : "Enable"}
               </Button>
             </form>
           </>

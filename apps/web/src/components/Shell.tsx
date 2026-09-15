@@ -78,7 +78,10 @@ export default function Shell({ children }: { children: ReactNode }) {
         <div className="mb-7 px-2">
           <div className="flex items-center gap-2">
             <Wordmark size="md" live={liveEnabled} />
-            <Pill value="paper" label="PAPER" />
+            <Pill
+              value={liveEnabled ? "live" : "paper"}
+              label={liveEnabled ? "LIVE" : "PAPER"}
+            />
           </div>
         </div>
 

@@ -7,6 +7,12 @@ const nextConfig = {
   // The app sits behind a reverse proxy holding TLS; this stops Next
   // advertising a version that tells an attacker what to target.
   poweredByHeader: false,
+  // Two lockfiles exist -- the workspace root's and this package's -- because
+  // the Docker build context is this directory and cannot reach the root one.
+  // Left to infer, Next picks whichever it finds first, which differs between
+  // a local build and the image build. Pin it to this package, which is what
+  // both actually build.
+  outputFileTracingRoot: import.meta.dirname,
 };
 
 export default nextConfig;

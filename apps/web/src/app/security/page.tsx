@@ -111,7 +111,7 @@ export default function SecurityPage() {
               />
             </div>
             <Button type="submit" disabled={busy}>
-              {busy ? "…" : "Generate new recovery codes"}
+              {busy ? "Generating…" : "Generate new recovery codes"}
             </Button>
           </form>
         )}
@@ -147,7 +147,7 @@ export default function SecurityPage() {
               minLength={8}
             />
             <Button type="submit" variant="primary" disabled={busy}>
-              {busy ? "…" : "Change password"}
+              {busy ? "Changing…" : "Change password"}
             </Button>
             <p className="mt-3 text-sm text-ink-faint">
               Changing your password signs out every other device. This one stays

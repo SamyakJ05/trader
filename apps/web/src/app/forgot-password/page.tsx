@@ -49,7 +49,7 @@ export default function ForgotPasswordPage() {
               required
             />
             <Button type="submit" variant="primary" disabled={busy}>
-              {busy ? "…" : "Send reset link"}
+              {busy ? "Sending…" : "Send reset link"}
             </Button>
             <ErrorNote message={error} />
           </form>

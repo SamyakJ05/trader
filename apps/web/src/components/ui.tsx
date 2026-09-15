@@ -82,7 +82,7 @@ export function StatCard({
 const PILL_STYLES: Record<string, string> = {
   // environments
   paper: "bg-gain/10 text-gain border-gain/30",
-  live: "bg-loss/10 text-loss border-loss/30",
+  live: "bg-live/10 text-live border-live/40",
   // adapter status
   working: "bg-gain/10 text-gain border-gain/30",
   scaffold: "bg-warn/10 text-warn border-warn/30",

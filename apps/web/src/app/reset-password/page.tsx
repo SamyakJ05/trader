@@ -71,7 +71,7 @@ function ResetForm() {
               minLength={8}
             />
             <Button type="submit" variant="primary" disabled={busy}>
-              {busy ? "…" : "Set password"}
+              {busy ? "Saving…" : "Set password"}
             </Button>
             <ErrorNote message={error} />
           </form>

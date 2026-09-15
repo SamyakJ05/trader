@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { api, setToken } from "@/lib/api";
 import { Wordmark } from "@/components/Wordmark";
-import { Button, ErrorNote, Pill, inputClass, labelClass } from "@/components/ui";
+import { Button, ErrorNote, inputClass, labelClass } from "@/components/ui";
 
 interface AuthResponse {
   token: string;
@@ -73,7 +73,6 @@ function InviteForm() {
       >
         <div className="mb-1 flex items-center gap-2">
           <h1><Wordmark size="lg" /></h1>
-          <Pill value="paper" label="PAPER" />
         </div>
 
         {checking ? (
@@ -110,7 +109,7 @@ function InviteForm() {
               minLength={8}
             />
             <Button type="submit" variant="primary" disabled={busy}>
-              {busy ? "…" : "Create account"}
+              {busy ? "Creating…" : "Create account"}
             </Button>
           </>
         ) : (
