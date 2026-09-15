@@ -14,6 +14,7 @@ from app.core.logging import get_logger
 from app.db.models import BrokerAccount, Position, Strategy, TradingSignal, PaperHolding
 from app.domain.enums import (
     AuditEventType,
+    Environment,
     Exchange,
     OrderSide,
     OrderType,
@@ -23,6 +24,7 @@ from app.domain.enums import (
 )
 from app.domain.models import OrderRequest
 from app.engines.paper import market_sim
+from app.workers.tick_stream import LIVE_SOURCE as LIVE_CANDLE_SOURCE
 from app.engines.market.candles import history as candle_history
 from app.engines.strategy.ai_agent import AiAgentStrategy
 from app.engines.strategy.base import AsyncStrategyBase, Signal, StrategyBase, StrategyContext
@@ -157,14 +159,31 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
         if account is None:
             continue
 
+        # Which price feed a strategy reads follows its account's environment,
+        # not its params. A live strategy trading off simulated candles is
+        # worse than one with no data at all: it places real orders against
+        # invented prices and looks like it is working.
+        is_live = account.environment == Environment.LIVE.value
+        source = strategy.params.get("source") or (
+            LIVE_CANDLE_SOURCE if is_live else "simulator"
+        )
+        if is_live and source == "simulator":
+            logger.error(
+                "live_strategy_on_simulated_feed",
+                strategy=str(strategy.id),
+                detail="refusing to trade live off simulated candles",
+            )
+            continue
+
         for symbol in strategy.symbols:
-            await market_sim.get_price(redis, symbol)  # ensure tracked by the feed
+            if not is_live:
+                await market_sim.get_price(redis, symbol)  # ensure tracked by the feed
             candles = await candle_history(
                 db,
                 symbol,
                 strategy.params.get("exchange", "NSE"),
                 strategy.params.get("interval", "1m"),
-                strategy.params.get("source", "simulator"),
+                source,
                 impl.min_history(strategy.params),
             )
             history = [candle.close for candle in candles]
