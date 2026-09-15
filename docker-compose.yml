@@ -41,9 +41,17 @@ services:
       - "8000:8000"
     volumes:
       - ./apps/api:/app
+    # db: required: false -- the prod overlay disables db entirely (managed
+    # Postgres instead) via profiles: ["never"], which removes it from the
+    # merged project. depends_on entries merge per-key across -f files rather
+    # than being replaced wholesale, so a hard dependency here would survive
+    # into prod as a reference to a service that no longer exists and fail
+    # to start. Soft here means: wait for it in dev, where it is running;
+    # warn and continue in prod, where DATABASE_URL points elsewhere anyway.
     depends_on:
       db:
         condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
 
@@ -59,6 +67,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+        required: false
       redis:
         condition: service_healthy
 
