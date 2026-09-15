@@ -20,7 +20,10 @@ def curve(*values):
     return [D(v) for v in values]
 
 
-def repeat_curve(pattern, cycles=20, start=D(100)):
+CURVE_START = D(100)
+
+
+def repeat_curve(pattern, cycles=20, start=CURVE_START):
     """A curve long enough to clear MIN_OBSERVATIONS_FOR_RATIOS.
 
     The annualised ratios refuse short samples, so any test of their VALUE

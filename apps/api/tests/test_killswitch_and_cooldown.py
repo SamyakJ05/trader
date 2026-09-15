@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +9,6 @@ from app.domain.enums import Exchange, OrderSide, OrderType, ProductType, RiskRu
 from app.domain.models import OrderRequest
 from app.engines.risk.engine import RiskEngine
 from app.services import daily_pnl, killswitch
-from decimal import Decimal
 
 
 class StubDb:

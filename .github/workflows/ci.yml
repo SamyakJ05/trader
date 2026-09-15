@@ -1,0 +1,102 @@
+# Tests on every push. Nothing is built or published until these pass.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Called by release.yml, so no image is published whose tests did not pass.
+  workflow_call:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+
+    # The integration tests (concurrent fills, settlement, ledger invariants)
+    # SKIP without a database, and they cover the code most likely to corrupt
+    # money. A real Postgres here is what stops a green tick meaning less than
+    # it looks like it means.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trader
+          POSTGRES_PASSWORD: trader
+          POSTGRES_DB: trader_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: apps/api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          pip install uv
+          uv pip install --system ".[dev]"
+
+      - name: Lint
+        run: ruff check app tests
+
+      - name: Migrate the test database
+        env:
+          DATABASE_URL: postgresql+asyncpg://trader:trader@localhost:5432/trader_test
+        run: alembic upgrade head
+
+      - name: Test
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://trader:trader@localhost:5432/trader_test
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest -q
+
+      - name: The live gate must still be armed
+        # A non-paper adapter marked WORKING means someone verified it against
+        # a real broker — or did not, and flipped it anyway. Either way it is
+        # not something a build should carry silently.
+        run: |
+          python -c "
+          from app.domain.capabilities import CAPABILITY_MATRIX
+          live = [b.value for b, c in CAPABILITY_MATRIX.items()
+                  if c.adapter_status.value == 'working' and b.value != 'paper']
+          if live:
+              raise SystemExit(f'adapters marked working: {live}')
+          print('live gate armed')
+          "
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm exec vitest run

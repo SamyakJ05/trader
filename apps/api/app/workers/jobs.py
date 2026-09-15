@@ -3,15 +3,15 @@ price step -> fill open paper orders -> mark positions -> run strategies."""
 
 from datetime import datetime, timezone
 
-from app.domain.models import Tick
-from app.domain.enums import Exchange
-from app.engines.market.candles import record_tick
-from app.engines.paper.settlement import settle_due
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.db.session import async_session_factory
+from app.domain.enums import Exchange
+from app.domain.models import Tick
+from app.engines.market.candles import record_tick
 from app.engines.paper import engine as paper_engine
 from app.engines.paper import market_sim
+from app.engines.paper.settlement import settle_due
 from app.engines.strategy import runner
 from app.services import heartbeat
 from app.services.sessions_broker import expire_stale_sessions

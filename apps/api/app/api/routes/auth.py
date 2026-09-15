@@ -18,7 +18,6 @@ from app.services import password_reset as reset_service
 from app.services import sessions as session_service
 from app.services import totp as totp_service
 
-
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 

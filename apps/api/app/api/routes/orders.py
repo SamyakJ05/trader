@@ -141,7 +141,7 @@ async def cancel_order(order_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     try:
         order = await order_service.cancel_order(db, get_redis(), user_id=user.id, order=order)
     except OrderServiceError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     return _order_out(order)
 
 
@@ -155,5 +155,5 @@ async def modify_order(
             db, get_redis(), user_id=user.id, order=order, price=body.price, quantity=body.quantity
         )
     except OrderServiceError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     return _order_out(order)

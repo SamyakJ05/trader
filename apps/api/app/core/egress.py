@@ -39,7 +39,7 @@ async def detect_egress_ip(timeout: float = LOOKUP_TIMEOUT_SECONDS) -> str | Non
             address = response.text.strip()
             if address:
                 return address
-        except Exception as exc:  # noqa: BLE001 - deliberately total
+        except Exception as exc:
             # Any failure of a third-party echo service is tolerated: a DNS
             # error, a timeout, a proxy returning HTML. None of them may stop
             # the api from starting, so the catch is as broad as the promise.

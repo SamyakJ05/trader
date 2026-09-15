@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.db.models import BrokerAccount, Position, Strategy, TradingSignal, PaperHolding
+from app.db.models import BrokerAccount, PaperHolding, Position, Strategy, TradingSignal
 from app.domain.enums import (
     AuditEventType,
     Environment,
@@ -23,14 +23,14 @@ from app.domain.enums import (
     StrategyStatus,
 )
 from app.domain.models import OrderRequest
-from app.engines.paper import market_sim
-from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
 from app.engines.market.candles import history as candle_history
+from app.engines.paper import market_sim
 from app.engines.strategy.ai_agent import AiAgentStrategy
 from app.engines.strategy.base import AsyncStrategyBase, Signal, StrategyBase, StrategyContext
 from app.engines.strategy.sma_crossover import SmaCrossover
 from app.services import audit, killswitch
 from app.services import orders as order_service
+from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
 
 logger = get_logger(__name__)
 

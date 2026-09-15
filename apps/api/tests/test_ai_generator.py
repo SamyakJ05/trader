@@ -3,7 +3,7 @@
 import pytest
 
 from app.services.ai.generator import draft_schema, generate, validate_draft
-from app.services.ai.llm import LLMError, tools_to_openai, _parse_json_text
+from app.services.ai.llm import LLMError, _parse_json_text, tools_to_openai
 
 
 class StubLLM:

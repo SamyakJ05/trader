@@ -1,6 +1,6 @@
 import uuid
-from urllib.parse import quote, urlencode
 from datetime import datetime
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import RedirectResponse
@@ -17,9 +17,8 @@ from app.core.redis import get_redis
 from app.db.models import BrokerAccount, CashLedger
 from app.domain.capabilities import CAPABILITY_MATRIX
 from app.domain.enums import AuditEventType, Broker, Environment
-from app.services import audit
+from app.services import audit, oauth_state
 from app.services import brokers as broker_service
-from app.services import oauth_state
 
 logger = get_logger(__name__)
 
@@ -182,7 +181,7 @@ async def connect_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSessi
     try:
         result = await broker_service.connect(db, account)
     except BrokerError as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
     # Zerodha round-trips opaque redirect_params back to our callback. Mint a
     # single-use state token rather than sending the account id alone: the
     # callback cannot authenticate its caller, so the state is what proves the

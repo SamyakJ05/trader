@@ -118,7 +118,7 @@ async def test_concurrent_fills_do_not_overwrite_each_other(db, user):
     """The upsert adds to the stored value in one statement. A read-modify-
     write would let two fills landing together lose one of the losses."""
     for _ in range(5):
-        await daily_pnl.add_realized(r_ := redis(), user.id, "live", Decimal("-10"), db)
+        await daily_pnl.add_realized(redis(), user.id, "live", Decimal("-10"), db)
     await db.commit()
 
     fresh = redis()
@@ -128,8 +128,9 @@ async def test_concurrent_fills_do_not_overwrite_each_other(db, user):
 @pg
 async def test_the_ledger_is_per_day(db, user):
     """Yesterday's losses must not count against today's limit."""
-    from app.db.models import DailyPnl
     from datetime import date
+
+    from app.db.models import DailyPnl
 
     db.add(
         DailyPnl(

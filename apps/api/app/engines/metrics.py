@@ -19,6 +19,7 @@ says how many periods make a year.
 """
 
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 
 # Trading days in an Indian equity year, after weekends and ~15 holidays.
 TRADING_DAYS_PER_YEAR = 250
@@ -70,7 +71,7 @@ def returns_from_equity(curve: list[Decimal]) -> list[Decimal]:
     wiped out, and later "returns" would be meaningless.
     """
     out = []
-    for previous, current in zip(curve, curve[1:]):
+    for previous, current in pairwise(curve):
         if previous <= 0:
             break
         out.append((current - previous) / previous)

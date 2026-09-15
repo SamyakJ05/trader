@@ -1,0 +1,30 @@
+# Run pre-built images from the registry instead of compiling on the host.
+#
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.prod.yml \
+#                  -f docker-compose.registry.yml pull
+#   docker compose -f ... up -d --no-build
+#
+# This is what makes the $12 droplet viable: `next build` peaks well above what
+# 2 GB leaves free once five containers are running, and a production host that
+# also holds broker credentials has no business carrying a toolchain.
+#
+# Setting `image` here means pull and run use these rather than anything built
+# locally. The `build:` blocks in the other files are left alone — they still
+# work for a local build — and `--no-build` is what guarantees the droplet
+# never compiles. That is deliberate: it relies on nothing newer than Compose
+# v2, unlike the `!reset` tag whose availability varies.
+#
+# IMAGE_TAG defaults to latest. Pin it to a commit sha to deploy a known build
+# or to roll back:
+#   IMAGE_TAG=sha-<40-char-sha> docker compose ... up -d --no-build
+
+services:
+  api:
+    image: ghcr.io/${GITHUB_REPOSITORY:?set to e.g. samyakj05/trader}-api:${IMAGE_TAG:-latest}
+
+  worker:
+    image: ghcr.io/${GITHUB_REPOSITORY:?set to e.g. samyakj05/trader}-api:${IMAGE_TAG:-latest}
+
+  web:
+    image: ghcr.io/${GITHUB_REPOSITORY:?set to e.g. samyakj05/trader}-web:${IMAGE_TAG:-latest}

@@ -11,9 +11,9 @@ from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from app.core.deps import DbSession, VerifiedUser
-from app.domain.enums import Broker
 from app.db.models import BacktestRun, Candle
 from app.domain.calendar import CalendarUnavailable
+from app.domain.enums import Broker
 from app.engines.backtest import run_backtest
 from app.engines.market.candles import bucket_start
 from app.engines.strategy.runner import STRATEGY_REGISTRY

@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.adapters.base import BrokerAdapter, FeatureNotSupportedError
 from app.core.redis import get_redis
-from app.db.models import Order, Position, PaperHolding
+from app.db.models import Order, PaperHolding, Position
 from app.db.session import async_session_factory
 from app.domain.enums import (
     Broker,

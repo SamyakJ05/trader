@@ -1,22 +1,19 @@
 """Delivery inventory. All mutations share the cash ledger's account lock."""
 
-from app.core.logging import get_logger
+from datetime import datetime, timezone
 
+from sqlalchemy import select
+
+from app.core.logging import get_logger
+from app.db.models import PaperHolding, PendingSettlement, Position
+from app.domain.calendar import IST
+from app.engines.paper.ledger import lock_account
 
 logger = get_logger(__name__)
 
 
 class SettlementError(RuntimeError):
     """Raised when settlement would violate an accounting invariant."""
-
-
-from datetime import datetime, timezone
-
-from sqlalchemy import select
-
-from app.db.models import PaperHolding, PendingSettlement, Position
-from app.domain.calendar import IST
-from app.engines.paper.ledger import lock_account
 
 
 async def get_holding(db, account_id, symbol, exchange):

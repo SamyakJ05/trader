@@ -5,6 +5,7 @@ import asyncio
 import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from itertools import pairwise
 
 from app.domain.calendar import IST
 from app.engines.market.candles import bucket_start, store_candle
@@ -77,7 +78,7 @@ def detect_suspect_gaps(rows: list[dict]) -> list[dict]:
     operator can decide, because this cannot distinguish a split from a crash.
     """
     suspects = []
-    for previous, current in zip(rows, rows[1:]):
+    for previous, current in pairwise(rows):
         if previous["close"] <= 0:
             continue
         ratio = current["open"] / previous["close"]
@@ -113,6 +114,7 @@ async def import_rows(db, symbol, interval, rows):
 
 async def main(args):
     import yfinance as yf
+
     from app.db.session import async_session_factory, engine
 
     frame = await asyncio.to_thread(

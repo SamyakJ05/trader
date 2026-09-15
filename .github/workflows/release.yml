@@ -1,0 +1,82 @@
+# Build and publish images. The droplet pulls these rather than compiling its
+# own — a 1 vCPU / 2 GB host cannot run `next build` alongside a live order
+# pipeline, and a production host has no business carrying a toolchain anyway.
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # Never publish an image whose tests did not pass. This re-runs ci rather
+  # than trusting that it happened, because a manual dispatch has no such
+  # guarantee.
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        include:
+          - name: api
+            context: ./apps/api
+          - name: web
+            context: ./apps/web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The web image needs a public API URL
+        # Next inlines public env vars at build time, so an unset variable
+        # here produces a bundle that calls the wrong origin — and it fails at
+        # runtime in the browser, not here, where it would be obvious.
+        if: matrix.name == 'web'
+        run: |
+          if [ -z "${{ vars.PUBLIC_API_URL }}" ]; then
+            echo "Set the PUBLIC_API_URL repository variable" >&2
+            echo "  Settings -> Secrets and variables -> Actions -> Variables" >&2
+            echo "  PUBLIC_API_URL=https://tickortrade.online/api/v1" >&2
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=ref,event=tag
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # linux/amd64 only: DigitalOcean droplets are x86. Building arm64 as
+          # well would double the time for an image nothing runs.
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.PUBLIC_API_URL }}

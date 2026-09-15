@@ -23,7 +23,7 @@ from app.adapters.base import (
     SessionExpiredError,
 )
 from app.core.security import decrypt_secret
-from app.domain.enums import Broker, Exchange, OrderStatus, OrderSide, OrderType, ProductType
+from app.domain.enums import Broker, Exchange, OrderSide, OrderStatus, OrderType, ProductType
 from app.domain.models import (
     BrokerOrder,
     BrokerPosition,

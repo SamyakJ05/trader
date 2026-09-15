@@ -8,15 +8,15 @@ from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
 from app.db.models import (
     BrokerAccount,
+    CashLedger,
     FundsSnapshot,
     HoldingsSnapshot,
-    Position,
     PaperHolding,
-    CashLedger,
     PendingSettlement,
+    Position,
 )
 from app.domain.enums import Environment
-from app.engines.paper import market_sim, ledger
+from app.engines.paper import ledger, market_sim
 from app.services import brokers as broker_service
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])

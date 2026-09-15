@@ -19,9 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import BrokerEnvCredentials
 from app.core.logging import get_logger
+from app.core.redis import get_redis
 from app.db.models import BrokerAccount, Order
 from app.domain.enums import AuditEventType, Broker, OrderStatus
-from app.core.redis import get_redis
 from app.services import audit, live_fills
 
 logger = get_logger(__name__)

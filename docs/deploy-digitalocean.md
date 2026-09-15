@@ -17,21 +17,33 @@ week — so registering an address you then change costs you days.
 
 | | | Monthly |
 |---|---|---|
-| Droplet, Basic 2 vCPU / 4 GB / 80 GB | runs everything except the database | $24.00 |
+| Droplet, Basic 1 vCPU / 2 GB / 50 GB | runs everything except the database | $12.00 |
 | Managed Postgres, 1 GB / 1 vCPU / 10 GiB | the part that must not be lost | $15.15 |
 | Reserved IP | free while attached to a running droplet | $0 |
-| **Total** | | **$39.15** |
+| **Total** | | **$27.15** |
 
-The tier below is $18 for 2 vCPU / 2 GB — the same two cores, six dollars less,
-and half the RAM. RAM is the constraint that decides it. Five containers run
-here (api with 2 workers, worker, web, Redis, Caddy) and `next build` is the
-memory-hungry step; building on the droplet at 2 GB meets the OOM killer.
+**This works because the droplet never compiles anything.** Images are built in
+GitHub Actions and pulled from the registry; the host only runs them. That is
+what makes $12 viable — `next build` peaks well above what 2 GB leaves free
+once five containers are up, so a droplet that built its own images would need
+the $24 tier. It is also better practice: a host holding broker credentials
+has no business carrying a toolchain.
 
-Premium Intel and Premium AMD are offered as toggles on the same Basic plans
-for a few dollars more, buying NVMe storage and newer CPUs. Not worth it here:
-this workload waits on Postgres round trips and broker HTTP, not on local disk.
+At runtime the footprint is modest — api ~300 MB, worker ~150 MB, web
+standalone ~100 MB, Redis ~50 MB, Caddy ~20 MB, roughly 650 MB of 2 GB.
 
-Transfer is 4 TB outbound on this tier, against an instance serving a handful
+**What you give up.** One vCPU is shared between the arq tick (every 5 seconds
+during market hours: price step, settlement, fills, marks) and serving
+requests. The workload is I/O-bound — it waits on Postgres and broker HTTP —
+so this is fine, but migrations and `make test-integration` will feel slow, and
+if you later run many strategies at once the $24 tier (2 vCPU / 4 GB) is the
+upgrade. Resizing a droplet is a reboot, not a rebuild.
+
+Premium Intel and Premium AMD are toggles on the same Basic plans for a few
+dollars more, buying NVMe storage and newer CPUs. Not worth it here, for the
+same reason: this workload waits on the network, not on local disk.
+
+Transfer is 2 TB outbound on this tier, against an instance serving a handful
 of users with no media. It will not be close.
 
 Managed Postgres rather than a container is the one place worth paying for:
@@ -40,12 +52,39 @@ thing here that cannot be rebuilt from git.
 
 ---
 
+## 0. Set up the image builds
+
+The droplet pulls images rather than building them, so the pipeline has to
+exist before there is anything to pull.
+
+1. **Repository variable.** Settings → Secrets and variables → Actions →
+   Variables → New variable:
+
+   | Name | Value |
+   |---|---|
+   | `PUBLIC_API_URL` | `https://tickortrade.online/api/v1` |
+
+   Next inlines public environment variables at build time, so this is baked
+   into the web image and cannot be changed at run time. The workflow fails
+   with a clear message if it is unset, rather than shipping a bundle that
+   calls the wrong origin — which would otherwise only show up in the browser.
+
+2. **Push to `main`.** `ci.yml` runs the tests, including the Postgres
+   integration tests that skip locally, and `release.yml` publishes
+   `ghcr.io/samyakj05/trader-api` and `-web` only if they pass. Watch the
+   first run under the Actions tab.
+
+3. **Packages are private by default**, which is what you want. The droplet
+   authenticates with a read-only token in step 7.
+
+---
+
 ## 1. Create the droplet
 
 DigitalOcean → Droplets → Create.
 
 - **Image:** Ubuntu 24.04 LTS
-- **Plan:** Basic → Regular → **2 vCPU / 4 GB / 80 GB** ($24/mo)
+- **Plan:** Basic → Regular → **1 vCPU / 2 GB / 50 GB** ($12/mo)
 - **Region:** **Bangalore (BLR1)**. Latency to NSE matters less than you would
   think for this workload, but the managed database must be in the same region
   as the droplet or you pay for — and wait on — cross-region traffic on every
@@ -146,6 +185,18 @@ ufw --force enable
 # Unattended security updates.
 apt install -y unattended-upgrades
 dpkg-reconfigure -plow unattended-upgrades
+
+# Swap. Nothing here should need it at 650 MB of 2 GB, and if the system is
+# swapping during market hours something is wrong. It exists so that a
+# transient spike kills a request rather than having the kernel choose a
+# victim — and the OOM killer's usual victim is Postgres or the worker.
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+# Swap late rather than eagerly: this is insurance, not extra memory.
+sysctl -w vm.swappiness=10
+echo 'vm.swappiness=10' >> /etc/sysctl.conf
 ```
 
 Then disable root SSH and password login:
@@ -215,19 +266,42 @@ Leave `BROKER_CREDENTIAL_OWNERS` empty for now. It comes into play in step 9.
 chmod 600 .env
 ```
 
+Two more, specific to pulling images rather than building them:
+
+| Setting | Value |
+|---|---|
+| `GITHUB_REPOSITORY` | `SamyakJ05/trader` — names the images to pull |
+| `IMAGE_TAG` | leave empty for `latest`; a `sha-...` tag pins a known build |
+
+Three compose files is a mouthful, so alias it:
+
+```bash
+echo "alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.registry.yml'" >> ~/.bashrc
+source ~/.bashrc
+```
+
+Log in to the registry. A read-only personal access token with `read:packages`
+is enough — it never needs write access from the droplet:
+
+```bash
+echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u SamyakJ05 --password-stdin
+```
+
 Bring it up:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml build
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head
+dc pull
+dc up -d --no-build
+dc exec api alembic upgrade head
 ```
 
-The first start takes a few minutes: two images build, and Caddy obtains a
-certificate. Watch it:
+`--no-build` is the guarantee that the droplet never compiles: without it a
+missing image would send Compose to the `build:` block and into the OOM killer.
+
+The first start takes a minute or two while Caddy obtains a certificate:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f caddy
+dc logs -f caddy
 ```
 
 `certificate obtained successfully` means DNS and TLS are both right.
@@ -241,12 +315,12 @@ curl -fsS https://tickortrade.online/api/v1/readyz | jq
 ```
 
 Expect `"status": "ok"` with `db`, `redis` and `worker` all true. If `worker`
-is false the arq container did not start — `docker compose ... logs worker`.
+is false the arq container did not start — `dc logs worker`.
 
 Check the startup log for the things that fail quietly:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs api | grep -E "config_|egress_ip"
+dc logs api | grep -E "config_|egress_ip"
 ```
 
 - Any `config_` line at error level is a setting still wrong. Fix it.
@@ -258,8 +332,7 @@ Then create your operator account — registration is invite-only, so the first
 one is made from the command line:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml \
-  exec api python -m app.seeds.bootstrap_admin you@example.com
+dc exec api python -m app.seeds.bootstrap_admin you@example.com
 ```
 
 Sign in at `https://tickortrade.online`, complete TOTP enrolment, and **save
@@ -340,12 +413,29 @@ a hurry.
 
 ## Deploying a change, afterwards
 
+Push to `main`. GitHub Actions runs the tests, and publishes images only if
+they pass. Then, on the droplet:
+
 ```bash
-cd trader && git pull
-docker compose -f docker-compose.yml -f docker-compose.prod.yml build
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.yml -f docker-compose.prod.yml exec api alembic upgrade head
+cd trader && git pull          # compose files and migrations
+dc pull                        # the new images
+dc up -d --no-build
+dc exec api alembic upgrade head
 curl -fsS https://tickortrade.online/api/v1/readyz | jq
 ```
 
+`git pull` is still needed — it brings the compose files and the migration
+scripts, which are not in the images.
+
 Check `/readyz` before walking away.
+
+**Rolling back.** Every build is also tagged with its commit sha, so a bad
+deploy reverses without waiting for CI:
+
+```bash
+IMAGE_TAG=sha-<the-previous-sha> dc up -d --no-build
+```
+
+Find the sha under the repository's Packages tab, or in the run log. Note that
+a migration already applied is not undone by this — rolling back code is safe,
+rolling back schema is not.

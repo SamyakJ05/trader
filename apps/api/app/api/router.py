@@ -2,10 +2,10 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     admin,
-    backtests,
     ai,
     audit_log,
     auth,
+    backtests,
     brokers,
     dashboard,
     orders,

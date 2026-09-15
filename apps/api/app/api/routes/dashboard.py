@@ -5,6 +5,7 @@ are listed as such instead of being silently folded into totals."""
 
 from collections import Counter
 from decimal import Decimal
+from types import SimpleNamespace
 
 from fastapi import APIRouter
 from sqlalchemy import func, select
@@ -17,14 +18,13 @@ from app.db.models import (
     FundsSnapshot,
     HoldingsSnapshot,
     Order,
-    Position,
     PaperHolding,
+    Position,
     Strategy,
 )
 from app.domain.enums import OrderStatus
-from app.services import killswitch
 from app.engines.paper import ledger
-from types import SimpleNamespace
+from app.services import killswitch
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 

@@ -37,7 +37,7 @@ dependencies = [
 history = ["yfinance>=0.2.54,<2"]
 # fakeredis needs its lua extra: the throttle's token bucket is a Lua script,
 # and without it EVALSHA is unsupported and every rate-limit test errors.
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7", "fakeredis[lua]>=2.26"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7,<0.9", "fakeredis[lua]>=2.26"]
 
 [build-system]
 requires = ["hatchling"]
@@ -49,6 +49,26 @@ packages = ["app"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
+# Explicit, because ruff's default set widens between releases and an
+# unspecified one means the linter's answer changes without the code changing.
+# These are correctness and clarity rules; the stylistic preferences ruff has
+# added over time (Decimal constructor form, UTC alias spelling) are not here
+# because they would flag hundreds of lines that are already correct.
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear: real bug patterns
+    "UP",   # pyupgrade, minus the alias preferences below
+    "RUF",  # ruff's own correctness rules
+]
+ignore = [
+    "E501",    # line length is enforced by the formatter, not here
+    "UP017",   # datetime.UTC vs timezone.utc: equivalent, and the codebase is consistent
+    "RUF012",  # ClassVar annotations on mutable defaults: noisy for config classes
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -4,8 +4,8 @@ from decimal import Decimal
 
 from app.domain.calendar import IST, is_intraday_square_off_due, settlement_date
 from app.domain.enums import Broker, OrderSide, ProductType, SignalType
-from app.engines.paper.charges import compute_charges
 from app.engines.metrics import summarise as summarise_metrics
+from app.engines.paper.charges import compute_charges
 from app.engines.paper.ledger import money
 from app.engines.paper.pnl import apply_fill
 from app.engines.strategy.base import AsyncStrategyBase, StrategyContext

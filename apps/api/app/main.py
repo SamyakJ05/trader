@@ -6,8 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.egress import report_egress_ip
-from app.core.preflight import check_production_config
 from app.core.logging import configure_logging, get_logger
+from app.core.preflight import check_production_config
 from app.core.redis import close_redis
 
 logger = get_logger(__name__)

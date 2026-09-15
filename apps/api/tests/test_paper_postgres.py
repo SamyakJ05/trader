@@ -249,9 +249,9 @@ async def test_competing_sells_cannot_oversell(sessions, account, redis):
 
 async def test_tick_ohlc_out_of_order_and_source_isolation(sessions):
     from app.db.models import Candle
-    from app.domain.models import Tick
     from app.domain.enums import Exchange
-    from app.engines.market.candles import record_tick, history, store_candle
+    from app.domain.models import Tick
+    from app.engines.market.candles import history, record_tick, store_candle
 
     symbol = uuid.uuid4().hex
     start = datetime(2026, 9, 1, 4, tzinfo=timezone.utc)
@@ -307,10 +307,12 @@ async def test_tick_ohlc_out_of_order_and_source_isolation(sessions):
 
 
 async def test_saved_backtest_isolation(sessions, account):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
     from app.api.routes.backtests import get_backtest, list_backtests
     from app.db.models import BacktestRun
-    from fastapi import HTTPException
-    from types import SimpleNamespace
 
     async with sessions() as db:
         run = BacktestRun(
@@ -328,9 +330,11 @@ async def test_saved_backtest_isolation(sessions, account):
 
 
 async def test_portfolio_cash_ignores_stale_snapshot(sessions, account):
-    from app.api.routes.portfolio import funds, cash_entries
     from types import SimpleNamespace
+
     from fastapi import HTTPException
+
+    from app.api.routes.portfolio import cash_entries, funds
 
     async with sessions() as db:
         db.add(FundsSnapshot(broker_account_id=account.id, available_cash=D(100)))
@@ -345,9 +349,9 @@ async def test_portfolio_cash_ignores_stale_snapshot(sessions, account):
 
 
 async def test_holdings_count_for_position_risk(sessions, account, redis):
-    from app.engines.risk.engine import RiskEngine
-    from app.domain.enums import RiskRuleType, Exchange, OrderSide, ProductType, OrderType
+    from app.domain.enums import Exchange, OrderSide, OrderType, ProductType, RiskRuleType
     from app.domain.models import OrderRequest
+    from app.engines.risk.engine import RiskEngine
 
     async with sessions() as db:
         db.add(
@@ -410,9 +414,10 @@ async def test_holdings_count_for_position_risk(sessions, account, redis):
 
 
 async def test_backtest_api_persists_next_open_results(sessions, account):
+    from types import SimpleNamespace
+
     from app.api.routes.backtests import BacktestBody, create_backtest
     from app.engines.market.candles import store_candle
-    from types import SimpleNamespace
 
     symbol = uuid.uuid4().hex.upper()
     start = datetime(2025, 2, 1, tzinfo=timezone.utc)
@@ -452,10 +457,11 @@ async def test_backtest_api_persists_next_open_results(sessions, account):
 
 
 async def test_strategy_uses_completed_candles_once(sessions, account, redis, monkeypatch):
+    from unittest.mock import AsyncMock
+
     from app.db.models import Strategy
     from app.engines.market.candles import store_candle
     from app.engines.strategy import runner
-    from unittest.mock import AsyncMock
 
     symbol = uuid.uuid4().hex.upper()
     start = datetime(2025, 2, 1, tzinfo=timezone.utc)

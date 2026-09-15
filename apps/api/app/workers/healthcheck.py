@@ -16,7 +16,7 @@ async def _alive() -> bool:
 
     try:
         return await is_alive(get_redis())
-    except Exception:  # noqa: BLE001 - a probe must never raise
+    except Exception:
         # Redis being unreachable is not the worker being dead, but from a
         # healthcheck's position the two are indistinguishable and both want
         # attention. Report unhealthy without the noise.

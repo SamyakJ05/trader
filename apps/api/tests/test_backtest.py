@@ -38,7 +38,7 @@ def bars(opens, closes):
             low=min(D(o), D(c)),
             volume=100,
         )
-        for i, (o, c) in enumerate(zip(opens, closes))
+        for i, (o, c) in enumerate(zip(opens, closes, strict=True))
     ]
 
 
@@ -156,7 +156,7 @@ def session_bars(start_ist, opens, closes, step_minutes=1):
             low=min(D(o), D(c)),
             volume=100,
         )
-        for i, (o, c) in enumerate(zip(opens, closes))
+        for i, (o, c) in enumerate(zip(opens, closes, strict=True))
     ]
 
 
