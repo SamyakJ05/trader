@@ -10,7 +10,7 @@ from app.core.deps import DbSession, VerifiedUser
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.db.models import Strategy
-from app.domain.enums import StrategyStatus
+from app.domain.enums import Broker, StrategyStatus
 from app.engines.paper import engine as paper_engine
 from app.services import brokers as broker_service
 from app.services import heartbeat, killswitch
@@ -180,8 +180,16 @@ async def reset_paper_account(account_id: uuid.UUID, user: VerifiedUser, db: DbS
     account = await broker_service.get_account(db, user.id, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
-    if account.environment != "paper":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Only paper accounts can be reset")
+    # broker, not environment. reset_account deletes every Position and
+    # PaperHolding row for the account and rewrites its cash ledger -- fine
+    # for the simulator, destructive and irreversible for a real broker
+    # account, which sits in paper environment for the whole of the
+    # verification playbook and would have been accepted here.
+    if account.broker != Broker.PAPER.value:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Only the paper simulator can be reset — this is a real broker account",
+        )
     await paper_engine.reset_account(db, account)
     await db.commit()
     return {"status": "reset", "cash": str(paper_engine.INITIAL_PAPER_CASH)}
