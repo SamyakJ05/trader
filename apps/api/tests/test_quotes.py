@@ -111,3 +111,53 @@ async def test_a_non_positive_cached_quote_is_ignored(bad):
 async def test_live_price_returns_none_rather_than_inventing():
     """The accessor itself never fabricates; only the simulator does."""
     assert await quotes.live_price(FakeDb(), redis(), symbol="ANYTHING") is None
+
+
+# ── the AI assistant's quote tool ────────────────────────────────────
+
+
+async def test_the_ai_tool_refuses_to_invent_a_live_quote(monkeypatch):
+    """The assistant reasons aloud from whatever it is given. A simulated
+    price on a live account would become the stated justification for a trade
+    the user then approves, with nothing marking it as fiction."""
+    import json
+
+    from app.services.ai import tools
+
+    payload = await tools.run_tool(
+        FakeDb(), redis(), "u", account("live"), "get_quotes", {"symbols": ["RELIANCE"]}
+    )
+    parsed = json.loads(payload)["RELIANCE"]
+    assert parsed["last_price"] is None
+    assert "do not" in parsed["note"].lower()
+
+
+async def test_the_ai_tool_uses_a_real_live_quote_when_there_is_one():
+    import json
+
+    from app.services.ai import tools
+
+    r = redis()
+    await quotes.record_live_tick(
+        r, symbol="RELIANCE", exchange="NSE", price=Decimal("2845.50")
+    )
+    payload = await tools.run_tool(
+        FakeDb(), r, "u", account("live"), "get_quotes", {"symbols": ["RELIANCE"]}
+    )
+    parsed = json.loads(payload)["RELIANCE"]
+    assert parsed["last_price"] == "2845.50"
+    assert parsed["source"] == "market"
+
+
+async def test_the_ai_tool_still_uses_the_simulator_on_paper():
+    """Paper is a simulation; inventing prices is the point."""
+    import json
+
+    from app.services.ai import tools
+
+    payload = await tools.run_tool(
+        FakeDb(), redis(), "u", account("paper"), "get_quotes", {"symbols": ["ANYTHING"]}
+    )
+    parsed = json.loads(payload)["ANYTHING"]
+    assert parsed["last_price"] is not None
+    assert parsed["source"] == "simulator"

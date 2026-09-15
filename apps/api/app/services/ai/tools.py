@@ -21,7 +21,7 @@ from app.db.models import (
 )
 from app.domain.enums import AuditEventType, OrderSide, OrderType, ProductType
 from app.engines.paper import market_sim
-from app.services import audit
+from app.services import audit, quotes
 
 TOOLS: list[dict] = [
     {
@@ -223,10 +223,34 @@ async def run_tool(
         if not symbols:
             raise ToolError("symbols is required")
         out = {}
+        is_live = account.environment != "paper"
         for symbol in symbols[:10]:
+            if is_live:
+                # The simulator invents a price for any symbol it has not
+                # seen. Handing that to an assistant on a live account would
+                # have it reason about, and recommend trades from, a number
+                # with no relationship to the market — and the user would have
+                # no way to tell. Say there is no quote instead.
+                price = await quotes.live_price(db, redis, symbol=symbol)
+                out[symbol] = (
+                    {"last_price": str(price), "source": "market"}
+                    if price is not None
+                    else {
+                        "last_price": None,
+                        "note": (
+                            "No live quote available. Do not estimate a price "
+                            "or recommend a trade in this symbol."
+                        ),
+                    }
+                )
+                continue
             price = await market_sim.get_price(redis, symbol)
             history = await market_sim.get_history(redis, symbol, 30)
-            out[symbol] = {"last_price": str(price), "recent": [str(p) for p in history]}
+            out[symbol] = {
+                "last_price": str(price),
+                "recent": [str(p) for p in history],
+                "source": "simulator",
+            }
         return json.dumps(out)
 
     if name == "get_strategies":
