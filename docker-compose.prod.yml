@@ -11,6 +11,25 @@
 # container on one droplet does not.
 
 services:
+  # TLS terminator and the only service exposed to the internet. Also the peer
+  # whose X-Forwarded-For uvicorn trusts — see the Caddyfile.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?public domain is required, e.g. tickortrade.online}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data      # certificates; losing this means re-issuing them
+      - caddyconfig:/config
+      - caddylogs:/var/log/caddy
+    depends_on:
+      - api
+      - web
+
   db:
     # Replaced by DATABASE_URL pointing at DigitalOcean managed Postgres. Kept
     # as a no-op so the base file's depends_on stays satisfiable.
@@ -43,19 +62,21 @@ services:
     # what the login and password-reset rate limiters key on "so one source
     # cannot sweep many accounts" -- an attacker rotating a forged header
     # defeats that axis entirely, and poisons the IP shown in each user's
-    # device list. Trust only the proxy. Set PROXY_IP to the reverse proxy's
-    # address on the docker network if it is not the default gateway.
-    command: >
-      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
-      --proxy-headers --forwarded-allow-ips=${PROXY_IP:-172.17.0.1}
+    # device list.
+    #
+    # Trust only Caddy. Its address on the compose network is assigned by
+    # Docker, so it is resolved at start rather than hardcoded; PROXY_IP
+    # overrides it if you put a different proxy in front.
+    command: ["python", "-m", "app.entrypoint"]
     restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:?managed Postgres URL is required}
       REDIS_URL: redis://redis:6379/0
     volumes: []        # the image is the artefact
-    ports:
-      - "127.0.0.1:8000:8000"   # reachable only through the proxy
+    # No host port: Caddy reaches this over the compose network. Binding it
+    # to the host as well would be a second, unprotected way in.
+    ports: []
     depends_on:
       redis:
         condition: service_healthy
@@ -102,8 +123,10 @@ services:
     command: ["node", "server.js"]
     environment: {}
     volumes: []
-    ports:
-      - "127.0.0.1:3000:3000"
+    ports: []
 
 volumes:
   redisdata:
+  caddydata:
+  caddyconfig:
+  caddylogs:

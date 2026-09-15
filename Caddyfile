@@ -1,0 +1,44 @@
+# TLS terminator and the only thing on the droplet listening publicly.
+#
+# Caddy obtains and renews Let's Encrypt certificates on its own, which is why
+# it is here rather than nginx: one less thing to remember in eighteen months.
+#
+# The security-relevant detail is header handling. uvicorn is started with
+# --forwarded-allow-ips naming this proxy, so whatever X-Forwarded-For it sends
+# is trusted as the client IP — and the login and password-reset rate limiters
+# key on that IP "so one source cannot sweep many accounts". Caddy's reverse_proxy
+# *replaces* X-Forwarded-For with the real peer address rather than appending to
+# a client-supplied value, so a forged header from the internet cannot survive
+# this hop. Do not add header_up X-Forwarded-For here; that would reintroduce it.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The API. Everything under /api goes to FastAPI; the rest is the Next app.
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	header {
+		# HSTS. Only after the certificate is confirmed working — a mistake here
+		# is remembered by browsers for the full max-age.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# This instance is private; nothing here should be indexed.
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10mb
+			roll_keep 5
+		}
+	}
+}
