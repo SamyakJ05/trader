@@ -290,9 +290,17 @@ class BreezeAdapter(BrokerAdapter):
         )
 
     async def get_funds(self) -> Funds:
+        # total_bank_balance is misleadingly named: confirmed against a real
+        # account that it mirrors allocated_equity (money already committed
+        # to equity trading), not free cash. unallocated_balance is the
+        # figure that matched the operator's actual available balance in the
+        # ICICI Direct app -- Breeze's own docs don't define either field
+        # explicitly, so this was checked against reality rather than text.
+        # unallocated_balance also arrives as a string while the other
+        # numeric fields are floats -- Decimal(str(...)) handles both.
         data = await self._request("GET", "/funds")
         return Funds(
-            available_cash=Decimal(str(data.get("total_bank_balance", 0))),
+            available_cash=Decimal(str(data.get("unallocated_balance", 0))),
             raw=data if isinstance(data, dict) else {},
         )
 

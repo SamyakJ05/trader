@@ -358,6 +358,32 @@ async def test_cancelling_carries_the_same_hint(monkeypatch):
         await a.cancel_order("123")
 
 
+# ── get_funds reads the field that is actually free cash ────────────────
+# Regression, found live against a real account: total_bank_balance mirrors
+# allocated_equity (money already committed to equity trading), not free
+# cash -- confirmed by comparing against the operator's real available
+# balance in the ICICI Direct app, since Breeze's docs don't define either
+# field explicitly. unallocated_balance is the one that matched.
+
+
+async def test_get_funds_reads_unallocated_balance_not_total_bank_balance(monkeypatch):
+    a = adapter(monkeypatch)
+
+    async def fake_request(self, method, path):
+        # A real payload, captured from an actual account: unallocated_balance
+        # (the true free cash) arrives as a string while every other numeric
+        # field here is a float, which the fix has to tolerate.
+        return {
+            "total_bank_balance": 1956.83,
+            "allocated_equity": 1956.83,
+            "unallocated_balance": "69857.02",
+        }
+
+    monkeypatch.setattr(BreezeAdapter, "_request", fake_request)
+    funds = await a.get_funds()
+    assert funds.available_cash == Decimal("69857.02")
+
+
 async def test_a_read_failure_does_not_blame_the_ip(monkeypatch):
     """Reads are not IP-restricted, so pointing at the IP here would send
     someone chasing the wrong cause."""
