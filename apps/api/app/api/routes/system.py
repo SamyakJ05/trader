@@ -132,15 +132,16 @@ async def set_killswitch(body: KillSwitchBody, user: VerifiedUser, db: DbSession
             redis, db, engaged=body.engaged, user_id=user.id, reason=body.reason
         )
         if body.engaged:
-            # Engaging globally also stops running strategies hard.
+            # Engaging globally stops running strategies hard, for every user
+            # -- not only the operator's own. The Redis flag already halts new
+            # orders instance-wide, so scoping this to the engager left every
+            # other user's strategies recorded as RUNNING while they were not,
+            # and resumed all of them at once on disengage.
             from sqlalchemy import update
 
             await db.execute(
                 update(Strategy)
-                .where(
-                    Strategy.user_id == user.id,
-                    Strategy.status == StrategyStatus.RUNNING.value,
-                )
+                .where(Strategy.status == StrategyStatus.RUNNING.value)
                 .values(status=StrategyStatus.KILLED.value)
             )
     elif body.scope == "strategy":

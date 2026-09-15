@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.egress import report_egress_ip
+from app.core.preflight import check_production_config
 from app.core.logging import configure_logging, get_logger
 from app.core.redis import close_redis
 
@@ -21,6 +22,10 @@ async def lifespan(app: FastAPI):
         live_trading=settings.enable_live_trading,
         market_hours_enforced=settings.market_hours_enforced,
     )
+    # Settings whose wrong value is otherwise silent. Logged, not raised:
+    # refusing to boot would take down a running instance over what may be a
+    # deliberate choice.
+    check_production_config(settings)
     # Diagnostic only: a mismatch with the broker's whitelist is logged, never
     # enforced here. See app/core/egress.py.
     await report_egress_ip(settings.broker_static_ip)

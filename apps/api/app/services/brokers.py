@@ -93,7 +93,14 @@ async def refresh_session(db: AsyncSession, account: BrokerAccount) -> dict:
 
 def credential_status(account: BrokerAccount) -> dict:
     """Masked credential metadata for the frontend. NEVER includes secret
-    material — only whether things are configured and when they expire."""
+    material — only whether things are configured and when they expire.
+
+    The booleans are still an observation about the process environment, so
+    they are only meaningful for a ref the account's owner was entitled to
+    attach. Refs are validated and ownership-checked at creation, which is
+    what keeps this from being a probe for which credentials the instance
+    holds.
+    """
     env_creds = BrokerEnvCredentials(account.credential_ref or "")
     return {
         "env_keys_configured": env_creds.has_api_keys,

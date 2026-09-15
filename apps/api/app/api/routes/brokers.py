@@ -10,8 +10,9 @@ from sqlalchemy import select
 from app.adapters.base import BrokerError
 from app.adapters.registry import get_adapter
 from app.adapters.zerodha.adapter import ZerodhaAdapter
-from app.core.config import get_settings
+from app.core.config import CREDENTIAL_REF_PATTERN, credential_ref_owners, get_settings
 from app.core.deps import DbSession, VerifiedUser
+from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.db.models import BrokerAccount, CashLedger
 from app.domain.capabilities import CAPABILITY_MATRIX
@@ -19,6 +20,8 @@ from app.domain.enums import AuditEventType, Broker, Environment
 from app.services import audit
 from app.services import brokers as broker_service
 from app.services import oauth_state
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/brokers", tags=["brokers"])
 
@@ -29,7 +32,9 @@ class CreateAccountRequest(BaseModel):
     environment: Environment = Environment.PAPER
     credential_ref: str | None = Field(
         default=None,
-        description="Env-var prefix for credentials, e.g. ZERODHA_MAIN",
+        max_length=64,
+        description="Env-var prefix for credentials, e.g. ZERODHA_MAIN. Must be "
+        "one the operator has provisioned for you.",
     )
     broker_client_id: str | None = None
 
@@ -84,16 +89,48 @@ async def list_accounts(user: VerifiedUser, db: DbSession):
     return [_account_out(a) for a in result.scalars()]
 
 
+def _check_credential_ref(ref: str | None, user) -> None:
+    """Refuse a credential ref the user does not own.
+
+    The ref is an env-var prefix, so attaching one to an account hands that
+    account's adapter whatever API key and secret sit behind it. Without this
+    check any user could name another tenant's ref -- and because the broker
+    read paths (profile, funds, holdings) are not behind the live gate, use it
+    to read that tenant's real account.
+
+    Ownership is declared by the operator in BROKER_CREDENTIAL_OWNERS. A ref
+    that is not declared belongs to nobody and is refused for everybody.
+    """
+    if not ref:
+        return
+    ref = ref.strip().upper()
+    if not CREDENTIAL_REF_PATTERN.match(ref):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Credential ref must be uppercase letters, digits and underscores",
+        )
+    owner = credential_ref_owners().get(ref)
+    if owner is None or owner != user.email.lower():
+        # One message for "not provisioned" and "not yours" on purpose: the
+        # difference would tell a user which refs exist on the instance.
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "That credential ref is not available to this account. Ask your "
+            "instance operator to provision one for you.",
+        )
+
+
 @router.post("/accounts", response_model=AccountOut, status_code=201)
 async def create_account(body: CreateAccountRequest, user: VerifiedUser, db: DbSession):
     if body.environment == Environment.LIVE and body.broker == Broker.PAPER:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Paper broker cannot be live")
+    _check_credential_ref(body.credential_ref, user)
     account = BrokerAccount(
         user_id=user.id,
         broker=body.broker.value,
         label=body.label,
         environment=body.environment.value,
-        credential_ref=body.credential_ref,
+        credential_ref=body.credential_ref.strip().upper() if body.credential_ref else None,
         broker_client_id=body.broker_client_id,
         status="connected" if body.broker == Broker.PAPER else "disconnected",
     )
@@ -210,8 +247,20 @@ async def set_session_token(
         try:
             await adapter.exchange_session(body.token.strip())
         except BrokerError as exc:
+            # The exception carries Breeze's raw /customerdetails response,
+            # which is the session-establishment payload. It belongs in the
+            # log, not in an HTTP body. The fixed message names the three
+            # things that actually cause this.
+            logger.warning(
+                "breeze_session_exchange_failed",
+                account_id=str(account.id),
+                error=str(exc),
+            )
             raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, f"Breeze session exchange failed: {exc}"
+                status.HTTP_502_BAD_GATEWAY,
+                "Breeze session exchange failed. The API_Session value may "
+                "already have been used or expired, or the API secret may be "
+                "wrong.",
             ) from exc
         await db.commit()
         return _account_out(account)

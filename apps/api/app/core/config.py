@@ -1,4 +1,5 @@
 import os
+import re
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -50,6 +51,41 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
 
+# A credential ref names an env-var prefix, so it is interpolated into
+# os.environ lookups. Anything a user can put here is therefore a read of the
+# process environment, and the shape below is what keeps that from being an
+# arbitrary one.
+CREDENTIAL_REF_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_]{0,63}$")
+
+
+def credential_ref_owners() -> dict[str, str]:
+    """Which user owns each provisioned credential ref.
+
+    Declared by the operator as BROKER_CREDENTIAL_OWNERS, a comma-separated
+    list of REF:email pairs:
+
+        BROKER_CREDENTIAL_OWNERS=ICICI_MAIN:you@example.com,ZERODHA_MAIN:you@example.com
+
+    A ref not listed here cannot be attached to any account. The alternative --
+    letting a user name any prefix -- means one tenant can name another's and
+    get an adapter holding that tenant's API key and secret. The broker read
+    paths are not behind the live gate, so that would be a live cross-user
+    data breach rather than a theoretical one.
+    """
+    raw = os.environ.get("BROKER_CREDENTIAL_OWNERS", "")
+    owners: dict[str, str] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry or ":" not in entry:
+            continue
+        ref, _, email = entry.partition(":")
+        ref = ref.strip().upper()
+        email = email.strip().lower()
+        if ref and email and CREDENTIAL_REF_PATTERN.match(ref):
+            owners[ref] = email
+    return owners
+
+
 class BrokerEnvCredentials:
     """Secrets are resolved from environment variables at call time, keyed by
     the broker account's credential_ref (e.g. ZERODHA_MAIN -> ZERODHA_MAIN_API_KEY).
@@ -57,6 +93,13 @@ class BrokerEnvCredentials:
 
     def __init__(self, ref: str):
         ref = ref.upper()
+        # Refusing a malformed ref here as well as at the route is deliberate:
+        # this constructor is reached from the adapter registry, postbacks and
+        # the credential-status helper, and a value that predates validation
+        # (or arrives from a future call site) must not become an env lookup.
+        if ref and not CREDENTIAL_REF_PATTERN.match(ref):
+            self.api_key = self.api_secret = self.access_token = None
+            return
         self.api_key = os.environ.get(f"{ref}_API_KEY")
         self.api_secret = os.environ.get(f"{ref}_API_SECRET")
         self.access_token = os.environ.get(f"{ref}_ACCESS_TOKEN")

@@ -38,9 +38,16 @@ services:
   api:
     build:
       context: ./apps/api
+    # --forwarded-allow-ips names the peers whose X-Forwarded-For is trusted.
+    # With '*' uvicorn trusts that header from anyone, and the client IP is
+    # what the login and password-reset rate limiters key on "so one source
+    # cannot sweep many accounts" -- an attacker rotating a forged header
+    # defeats that axis entirely, and poisons the IP shown in each user's
+    # device list. Trust only the proxy. Set PROXY_IP to the reverse proxy's
+    # address on the docker network if it is not the default gateway.
     command: >
       uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
-      --proxy-headers --forwarded-allow-ips='*'
+      --proxy-headers --forwarded-allow-ips=${PROXY_IP:-172.17.0.1}
     restart: unless-stopped
     env_file: .env
     environment:
