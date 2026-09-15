@@ -159,32 +159,29 @@ reviewed act.
 - Strategy state `KILLED` does not auto-release: release the kill switch, then
   explicitly start the strategy again.
 
-## How to add the first real Zerodha order flow
+## Going live with Zerodha
 
-1. Create a Kite Connect app at https://developers.kite.trade. Set the redirect
-   URL to `http://localhost:8000/api/v1/brokers/zerodha/callback`.
-2. Put credentials in `.env`: `ZERODHA_MAIN_API_KEY`, `ZERODHA_MAIN_API_SECRET`.
-   Set `APP_ENCRYPTION_KEY` (generate with the command in `.env.example`) so the
-   daily access token is encrypted at rest.
-3. In the UI, add a broker account: broker `zerodha`, credential ref
-   `ZERODHA_MAIN`, environment `paper` for now. Click Connect → complete Kite
-   login → callback stores the encrypted access token.
-4. Verify read paths first: Sync the account; confirm profile/funds/holdings
-   come back correctly (`apps/api/app/adapters/zerodha/adapter.py`). Fix any
-   payload drift against current Kite docs.
-5. Verify order path on paper... there is no Kite sandbox, so this means a
-   real 1-quantity order: temporarily set `ENABLE_LIVE_TRADING=true`, set
-   `live_enabled=true` on the account row, and flip
-   `CAPABILITY_MATRIX[Broker.ZERODHA].adapter_status` to `WORKING` — all three
-   gates exist precisely so this is a deliberate act. Place a 1-share CNC limit
-   order far from market price, verify it appears in Kite, then cancel it
-   through the API. Confirm `BROKER_RESPONSE` audit events captured everything.
-6. Implement the postback checksum (`app/api/routes/webhooks.py` TODO) and order
-   reconciliation so fills update the orders table.
-7. Add a worker job to refresh/invalidate the Kite session daily (token dies
-   ~6am IST) and surface `session_expired` on the brokers page.
-8. Only then consider strategy-driven live orders — and start with hard-coded
-   tiny quantity caps in a new risk rule.
+Every Kite call here was written from Zerodha's documentation and has never
+touched their API. `adapter_status` is `scaffold` and the live gate refuses
+live orders structurally because of it.
+
+**[docs/zerodha-verification-playbook.md](docs/zerodha-verification-playbook.md)**
+is the sequence that changes that: connect, verify each read path against your
+own Kite dashboard, sync instruments, watch the tick stream during market
+hours, then one supervised 1-share limit order.
+
+That last step spends real money on your own account — Kite has no sandbox, so
+there is no way to prove the order path without placing an order. The three
+gates (`ENABLE_LIVE_TRADING`, the account's `live_enabled`, and the adapter's
+status) are separate so that flip is a deliberate act, and
+`tests/test_live_gate.py` fails the moment the third one moves.
+
+Built and ready for that verification, none of it proven against the live API:
+OAuth callback bound by a single-use state token, client-side rate limiting
+shared across processes, checksum-verified order postbacks with forward-only
+reconciliation, daily session-expiry handling, instrument master sync, a
+supervised Kite tick stream, and live quotes that refuse to price an order
+rather than falling back to the simulator.
 
 ## API surface (summary)
 
