@@ -123,6 +123,14 @@ services:
         NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?public API URL is required}
     image: tickortrade-web
     restart: unless-stopped
+    # The base file's working_dir: /app is for local dev, where the source
+    # is bind-mounted directly at /app with no apps/web nesting. That value
+    # merges straight through into this overlay unless overridden here --
+    # and the image's own WORKDIR (set to /app/web in the Dockerfile, where
+    # the standalone build's server.js actually lands) loses to it at
+    # container start, which is why `node server.js` resolved against /app
+    # and failed with "Cannot find module '/app/server.js'".
+    working_dir: /app/web
     command: ["node", "server.js"]
     environment: {}
     volumes: []
