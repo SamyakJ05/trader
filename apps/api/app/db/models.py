@@ -301,6 +301,32 @@ class FundsSnapshot(Base):
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
+class DailyPnl(Base):
+    """Per-day realized P&L, the figure MAX_DAILY_LOSS compares against.
+
+    Postgres rather than Redis alone. The counter gates real money, and a
+    Redis flush without persistence would reset it to zero mid-day — the rule
+    would still evaluate, still pass, and stop protecting anything, which is
+    the worst shape a safety control can fail in. Redis stays as the hot path;
+    this is what it is rebuilt from.
+
+    The day is an IST trading date, not a UTC one: a fill at 22:00 UTC belongs
+    to the next morning's session in India.
+    """
+
+    __tablename__ = "daily_pnl"
+    __table_args__ = (UniqueConstraint("user_id", "environment", "trading_day"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    environment: Mapped[str] = mapped_column(String(8))
+    trading_day: Mapped[date] = mapped_column(Date)
+    realized: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class MarketInstrument(Base):
     __tablename__ = "market_instruments"
     __table_args__ = (

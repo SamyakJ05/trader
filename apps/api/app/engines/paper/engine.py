@@ -235,7 +235,9 @@ async def _execute_fill(
             )
         )
     # Feed the MAX_DAILY_LOSS rule: per-day realized counter in Redis.
-    await daily_pnl.add_realized(redis, order.user_id, order.environment, realized_delta - charges)
+    await daily_pnl.add_realized(
+        redis, order.user_id, order.environment, realized_delta - charges, db
+    )
 
     notional = fill_price * fill_qty
     await ledger.append(

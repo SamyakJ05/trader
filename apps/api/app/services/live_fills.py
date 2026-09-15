@@ -102,7 +102,7 @@ async def book_fill(
     # The counter MAX_DAILY_LOSS reads. Without this a live account could lose
     # any amount and the limit would never fire.
     await daily_pnl.add_realized(
-        redis, order.user_id, order.environment, realized_delta - charges
+        redis, order.user_id, order.environment, realized_delta - charges, db
     )
 
     await audit.emit(

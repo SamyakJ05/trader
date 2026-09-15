@@ -220,7 +220,12 @@ class RiskEngine:
             limit_loss = Decimal(str(params.get("max_loss", 10000)))
             # Per-day realized delta tracked at fill time (positions store
             # cumulative P&L, which cannot answer the daily question).
-            pnl = await daily_pnl.get_realized(self.redis, user_id, environment)
+            # The db is passed so a cold cache falls back to the ledger rather
+            # than reading zero — a flushed Redis must not look like a day
+            # with no losses.
+            pnl = await daily_pnl.get_realized(
+                self.redis, user_id, environment, self.db
+            )
             if pnl < -limit_loss:
                 return f"Daily realized loss {pnl:.2f} breaches limit -{limit_loss:.2f}"
 

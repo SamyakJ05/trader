@@ -146,8 +146,9 @@ reviewed act.
 
 ## Known caveats
 
-- The daily-loss counter lives in Redis: a Redis flush/restart without AOF
-  persistence resets it to zero for the day. Enable AOF before relying on it.
+- The daily-loss counter is written to Postgres as well as Redis, so a cache
+  flush no longer resets it. Redis stays the hot path; a cold read falls back
+  to the ledger and repopulates it.
 - Kill switches halt order *placement*; already-open paper orders keep filling
   on worker ticks. Engage the switch, then cancel working orders from the
   Orders page if you want a hard stop.
