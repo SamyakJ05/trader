@@ -155,3 +155,76 @@ def test_user_remark_carries_our_client_order_id(monkeypatch):
     so our own per-account uniqueness stays the only duplicate guard."""
     body = adapter(monkeypatch)._order_body(order(), "client-order-abc")
     assert body["user_remark"].startswith("client-order-abc"[:20])
+
+
+# ── the security master ──────────────────────────────────────────────
+# Breeze's stock codes exist only in this file; there is no API for the
+# mapping. Rows below are taken verbatim from a downloaded NSEScripMaster.txt.
+
+
+def master_row(**overrides):
+    """A real row's shape: quoted keys, inconsistent spacing and casing."""
+    row = {
+        '"Token"': '"2885"',
+        ' "ShortName"': '"RELIND"',
+        ' "Series"': '"EQ"',
+        ' "CompanyName"': '"RELIANCE INDUSTRIES"',
+        ' "ticksize"': "0.01",
+        ' "Lotsize"': "1",
+        ' "Symbol"': '"RELIANCE"',
+    }
+    row.update(overrides)
+    return row
+
+
+def test_a_master_row_yields_breezes_own_code(monkeypatch):
+    """The symbol stored is ShortName — what Breeze's API expects — not the
+    NSE ticker a Kite-shaped adapter would reach for."""
+    instrument = adapter(monkeypatch)._instrument_from_row(master_row(), "NSE")
+    assert instrument.symbol == "RELIND"
+    assert instrument.broker_token == "2885"
+
+
+def test_the_name_carries_the_nse_symbol_so_a_code_is_legible(monkeypatch):
+    """RELIND means nothing to a human reading a position list."""
+    instrument = adapter(monkeypatch)._instrument_from_row(master_row(), "NSE")
+    assert "RELIANCE INDUSTRIES" in instrument.name
+    assert "RELIANCE" in instrument.name
+
+
+def test_lot_and_tick_size_are_parsed(monkeypatch):
+    instrument = adapter(monkeypatch)._instrument_from_row(master_row(), "NSE")
+    assert instrument.lot_size == 1
+    assert instrument.tick_size == Decimal("0.01")
+
+
+def test_a_row_without_a_short_name_is_skipped(monkeypatch):
+    """No code means nothing we could trade; better skipped than stored with
+    an empty symbol that silently matches nothing."""
+    assert adapter(monkeypatch)._instrument_from_row(
+        master_row(**{' "ShortName"': '""'}), "NSE"
+    ) is None
+
+
+def test_a_malformed_row_does_not_fail_the_whole_sync(monkeypatch):
+    """The master has tens of thousands of rows; one bad one should not cost
+    the rest."""
+    assert adapter(monkeypatch)._instrument_from_row(
+        master_row(**{' "Lotsize"': '"not-a-number"'}), "NSE"
+    ) is None
+
+
+async def test_an_unknown_exchange_is_refused(monkeypatch):
+    """Each exchange is a separate file inside the zip; asking for one we have
+    no filename for should say so rather than download 2MB and find nothing."""
+    with pytest.raises(FeatureNotSupportedError, match="security master"):
+        await adapter(monkeypatch).get_instruments("MCX")
+
+
+def test_the_master_url_is_the_one_carrying_nse_equities():
+    """Two URLs are live and they are not mirrors: the SDK's MotherAppMaster
+    zip has MCX but no NSEScripMaster.txt, so NSE equities are absent from it
+    entirely. Verified by downloading both."""
+    from app.adapters.icici_breeze.adapter import SECURITY_MASTER_URL
+
+    assert "NewSecurityMaster" in SECURITY_MASTER_URL

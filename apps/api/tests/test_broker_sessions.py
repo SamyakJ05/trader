@@ -149,3 +149,43 @@ async def test_one_bad_account_does_not_stop_the_others():
     healthy = account(expires_at=past)
     assert await bs.expire_stale_sessions(FakeDb([broken, healthy])) == 1
     assert healthy.status == BrokerAccountStatus.SESSION_EXPIRED.value
+
+
+# ── brokers disagree about when sessions die ─────────────────────────
+
+
+def test_breeze_sessions_die_at_midnight_not_at_kites_flush():
+    """Breeze expires at midnight IST; Kite at ~06:00. Using Kite's time for
+    Breeze would leave an account claiming to be connected for six hours after
+    its session was already dead."""
+    three_am = ist(2026, 9, 15, 3, 0)
+    assert bs.last_flush(three_am, broker="icici_breeze") == ist(
+        2026, 9, 15, 0, 0
+    ).astimezone(timezone.utc)
+    assert bs.last_flush(three_am, broker="zerodha") == ist(
+        2026, 9, 14, 6, 0
+    ).astimezone(timezone.utc)
+
+
+def test_a_breeze_session_from_yesterday_is_stale_after_midnight():
+    stale = account(broker="icici_breeze", expires_at=None)
+    assert bs.is_session_stale(stale, now=ist(2026, 9, 15, 3, 0))
+
+
+def test_an_unknown_broker_gets_the_later_flush():
+    """Kite's 06:00 is the conservative default: it expires sessions later, so
+    an unknown broker is not marked dead while it might still be alive."""
+    assert bs.last_flush(ist(2026, 9, 15, 3, 0), broker="something-new") == bs.last_flush(
+        ist(2026, 9, 15, 3, 0), broker="zerodha"
+    )
+
+
+async def test_breeze_accounts_are_expired_by_the_job():
+    """Breeze was absent from the flush list entirely, so its sessions were
+    never marked expired however old they were."""
+    from datetime import timedelta
+
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    stale = account(broker="icici_breeze", expires_at=past)
+    assert await bs.expire_stale_sessions(FakeDb([stale])) == 1
+    assert stale.status == BrokerAccountStatus.SESSION_EXPIRED.value

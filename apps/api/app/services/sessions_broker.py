@@ -1,9 +1,14 @@
 """Broker session expiry.
 
-Kite access tokens die at the daily exchange flush, roughly 6am IST, regardless
-of when they were issued. An account still marked CONNECTED after that is
-lying: every call through it will fail, strategies will throw on a schedule,
-and the user has no idea they need to log in again.
+Broker sessions die daily, and brokers disagree about when. Kite tokens go at
+the exchange flush around 6am IST; Breeze sessions go at midnight IST or 24
+hours from issue, whichever is first. Neither can be refreshed
+programmatically — both need the user back at a browser login.
+
+An account still marked CONNECTED past its broker's flush is lying: every call
+through it will fail, strategies will throw on a schedule, and the user has no
+idea a re-login is what is needed. Using one broker's flush time for another
+is the same lie with a different duration.
 
 This marks such accounts SESSION_EXPIRED so the UI can say so plainly, and
 audits each transition. It never touches paper accounts, which have no session
@@ -29,16 +34,33 @@ logger = get_logger(__name__)
 # 05:55 dies five minutes later.
 KITE_FLUSH = time(6, 0)
 
-# Brokers whose sessions expire at a daily flush rather than on their own
-# schedule. Paper has no session at all.
-_DAILY_FLUSH_BROKERS = {Broker.ZERODHA.value}
+# Breeze sessions die at midnight IST or 24 hours from issue, whichever comes
+# first — ICICI cite SEBI guidance for the daily reset. Using Kite's 06:00
+# would leave a Breeze account claiming to be connected for six hours after
+# its session was already dead.
+BREEZE_FLUSH = time(0, 0)
+
+# When each broker's sessions die. Paper has no session at all, so it is
+# absent rather than mapped to anything.
+_DAILY_FLUSH: dict[str, time] = {
+    Broker.ZERODHA.value: KITE_FLUSH,
+    Broker.ICICI_BREEZE.value: BREEZE_FLUSH,
+}
+
+_DAILY_FLUSH_BROKERS = set(_DAILY_FLUSH)
 
 
-def last_flush(now: datetime | None = None) -> datetime:
-    """The most recent daily flush at or before `now`, in UTC."""
+def last_flush(now: datetime | None = None, *, broker: str | None = None) -> datetime:
+    """The most recent daily flush at or before `now`, in UTC.
+
+    `broker` selects the flush time; without one, Kite's is used, which is the
+    later of the two and therefore the conservative choice for a caller that
+    does not know.
+    """
+    flush_time = _DAILY_FLUSH.get(broker or "", KITE_FLUSH)
     moment = (now or datetime.now(timezone.utc)).astimezone(IST)
     flush_today = moment.replace(
-        hour=KITE_FLUSH.hour, minute=KITE_FLUSH.minute, second=0, microsecond=0
+        hour=flush_time.hour, minute=flush_time.minute, second=0, microsecond=0
     )
     if moment < flush_today:
         flush_today -= timedelta(days=1)
@@ -68,7 +90,7 @@ def is_session_stale(account: BrokerAccount, now: datetime | None = None) -> boo
     # No explicit expiry: fall back to the flush. Without a stored expiry we
     # cannot tell when the token was issued, so we treat it as stale after the
     # most recent flush and let a reconnect prove otherwise.
-    return expires_at is None and moment >= last_flush(moment)
+    return expires_at is None and moment >= last_flush(moment, broker=account.broker)
 
 
 async def expire_stale_sessions(db: AsyncSession, now: datetime | None = None) -> int:

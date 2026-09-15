@@ -19,8 +19,11 @@ than returning a retryable error.
 """
 
 import base64
+import csv
 import hashlib
+import io
 import json
+import zipfile
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -54,6 +57,19 @@ from app.domain.models import (
 logger = get_logger(__name__)
 
 API_BASE = "https://api.icicidirect.com/breezeapi/api/v1"
+
+# The security master, which maps Breeze's stock codes to exchange symbols.
+# Two URLs are live and they are NOT mirrors: the SDK's MotherAppMaster zip
+# carries MCX but no NSEScripMaster.txt, so NSE equities are simply absent from
+# it. Verified by downloading both. The docs' NewSecurityMaster zip has the NSE
+# file, so that is the one used.
+SECURITY_MASTER_URL = "https://directlink.icicidirect.com/NewSecurityMaster/SecurityMaster.zip"
+
+_SECURITY_MASTER_FILES = {
+    "NSE": "NSEScripMaster.txt",
+    "BSE": "BSEScripMaster.txt",
+    "NFO": "FONSEScripMaster.txt",
+}
 LOGIN_BASE = "https://api.icicidirect.com/apiuser/login"
 
 _STATUS_MAP = {
@@ -372,8 +388,89 @@ class BreezeAdapter(BrokerAdapter):
         )
 
     async def get_instruments(self, exchange: str | None = None) -> list[Instrument]:
-        # Breeze distributes a security master file; TODO(verify current URL).
-        raise FeatureNotSupportedError("Breeze security master download not implemented yet")
+        """Breeze's security master: a zip of per-exchange CSVs.
+
+        This is the only way to learn Breeze's stock codes — there is no API
+        endpoint for the mapping, and the codes are ICICI's own (RELIANCE is
+        RELIND). Regenerated daily around 08:00 IST.
+
+        Downloaded here rather than at import time, which is what their SDK
+        does: importing a module should not fetch several megabytes over the
+        network before the caller has decided they need it.
+        """
+        exchange_code = (exchange or Exchange.NSE.value).upper()
+        filename = _SECURITY_MASTER_FILES.get(exchange_code)
+        if filename is None:
+            raise FeatureNotSupportedError(
+                f"No Breeze security master file known for {exchange_code}"
+            )
+
+        # Not through _request: the master is a static file on a different
+        # host, needs no signature, and must not spend the API's rate budget.
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(SECURITY_MASTER_URL)
+        if resp.status_code != 200:
+            raise BrokerError(
+                f"Breeze security master download failed ({resp.status_code})"
+            )
+
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(resp.content))
+            with archive.open(filename) as handle:
+                text = io.TextIOWrapper(handle, encoding="utf-8", errors="replace")
+                rows = list(csv.DictReader(text))
+        except (zipfile.BadZipFile, KeyError) as exc:
+            raise BrokerError(
+                f"Breeze security master is not readable: {exc}"
+            ) from exc
+
+        return [
+            instrument
+            for instrument in (self._instrument_from_row(row, exchange_code) for row in rows)
+            if instrument is not None
+        ]
+
+    def _instrument_from_row(self, row: dict, exchange_code: str) -> Instrument | None:
+        """One security-master row to an Instrument, or None if unusable.
+
+        Column names in the master are quoted and inconsistently cased between
+        files, so they are matched case-insensitively and stripped.
+        """
+        cleaned = {
+            (key or "").strip().strip('"').lower(): (value or "").strip().strip('"')
+            for key, value in row.items()
+        }
+        # ShortName is Breeze's own code — the one its API expects. ExchangeCode
+        # is the NSE symbol, kept as the human-readable name so a user can tell
+        # which company a code refers to.
+        # Column names verified against a downloaded NSEScripMaster.txt:
+        # Token, ShortName, Series, CompanyName, ticksize, Lotsize, ..., Symbol.
+        # ShortName is Breeze's own code (RELIND); Symbol is the NSE ticker
+        # (RELIANCE), kept alongside the company name so a human reading a
+        # position can tell what RELIND is.
+        stock_code = cleaned.get("shortname")
+        if not stock_code:
+            return None
+        nse_symbol = cleaned.get("symbol")
+        company = cleaned.get("companyname")
+        name = f"{company} ({nse_symbol})" if company and nse_symbol else company or nse_symbol
+        lot_size = cleaned.get("lotsize")
+        tick_size = cleaned.get("ticksize")
+        try:
+            return Instrument(
+                symbol=stock_code,
+                exchange=Exchange(exchange_code),
+                broker_token=cleaned.get("token") or None,
+                name=name or None,
+                lot_size=int(float(lot_size)) if lot_size else None,
+                tick_size=Decimal(tick_size) if tick_size else None,
+                instrument_type=cleaned.get("series") or None,
+            )
+        except (ValueError, ArithmeticError):
+            # A malformed row is skipped rather than failing the whole sync:
+            # the master carries tens of thousands of rows and one bad one
+            # should not cost the rest.
+            return None
 
     def subscribe_ticks(self, symbols: list[str]) -> AsyncIterator[Tick]:
         raise FeatureNotSupportedError("Breeze streaming (socket.io) not implemented yet")
