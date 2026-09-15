@@ -43,6 +43,28 @@ test-integration:
 lint:
 	docker compose exec api ruff check app tests
 
+# Take a backup of the live database.
+#
+# Run from a throwaway postgres image rather than the api container: the api
+# image carries no client tools, and pinning the image to the server's major
+# version avoids the version-skew that silently produces an unrestorable dump.
+# Set PG_MAJOR to match your managed instance.
+PG_MAJOR ?= 16
+backup:
+	@test -n "$$DATABASE_URL" || { echo "DATABASE_URL must be set"; exit 1; }
+	docker run --rm -e DATABASE_URL="$$DATABASE_URL" postgres:$(PG_MAJOR) \
+		pg_dump "$$DATABASE_URL" --format=custom > backup-$$(date +%F).dump
+	@echo "wrote backup-$$(date +%F).dump — now verify it: make verify-restore file=backup-$$(date +%F).dump"
+
+# A backup you have not restored is not a backup. This restores one into a
+# throwaway database and checks it is not hollow -- the tables that would
+# matter come back non-empty, and the cash ledger still balances. It drops the
+# scratch database afterwards and never touches the live one.
+#   make verify-restore file=backup-2026-09-15.dump
+verify-restore:
+	@test -n "$(file)" || { echo "usage: make verify-restore file=<dump>"; exit 1; }
+	DATABASE_URL="$${DATABASE_URL}" ops/verify_restore.sh "$(file)"
+
 fmt:
 	docker compose exec api ruff format app tests
 
