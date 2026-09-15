@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.base import BrokerError, FeatureNotSupportedError
-from app.adapters.registry import get_adapter
+from app.adapters.registry import get_trading_adapter
 from app.core.config import get_settings
 from app.db.models import BrokerAccount, IdempotencyKey, Order
 from app.domain.capabilities import get_capabilities
@@ -198,7 +198,11 @@ async def _place_order_unchecked(
         return order
 
     if environment == Environment.PAPER.value:
-        adapter = get_adapter(account)
+        # get_trading_adapter, not get_adapter: this branch has already decided
+        # the order is simulated, and get_adapter would hand back the real
+        # broker's adapter regardless -- sending a live order that the paper
+        # engine then books a fabricated fill for, two lines below.
+        adapter = get_trading_adapter(account)
         ack = await adapter.place_order(request, client_order_id)
         order.broker_order_id = ack.broker_order_id
         order.status = OrderStatus.ACCEPTED.value
@@ -216,7 +220,7 @@ async def _place_order_unchecked(
         await db.commit()
         return order
 
-    adapter = get_adapter(account)
+    adapter = get_trading_adapter(account)
     try:
         ack = await adapter.place_order(request, client_order_id)
         order.broker_order_id = ack.broker_order_id
@@ -264,7 +268,7 @@ async def cancel_order(
         await db.commit()
         return order
 
-    adapter = get_adapter(account)
+    adapter = get_trading_adapter(account)
     try:
         ack = await adapter.cancel_order(order.broker_order_id or "")
         old = order.status
