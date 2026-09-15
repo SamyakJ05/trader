@@ -19,6 +19,11 @@
   --color-gain: #34d399;
   --color-loss: #f87171;
   --color-warn: #fbbf24;
+  /* Live trading. Cyan is the interface's voice for information; amber is
+     reserved for consequence — a real order, a real position, real money.
+     Nothing decorative may use it, or it stops meaning anything. */
+  --color-live: #f59e0b;
+  --color-live-dim: #78350f;
 
   /* fonts (next/font variables set on <html>) */
   --font-sans: var(--font-grotesk), ui-sans-serif, system-ui, sans-serif;

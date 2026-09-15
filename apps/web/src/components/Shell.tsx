@@ -7,6 +7,7 @@ import { api, getToken, setToken } from "@/lib/api";
 import { KillSwitchStatus, User } from "@/lib/types";
 import { KillSwitchBanner } from "./broker/KillSwitchBanner";
 import { Pill } from "./ui";
+import { Wordmark } from "./Wordmark";
 import {
   IconAI,
   IconAudit,
@@ -52,6 +53,9 @@ export default function Shell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [kill, setKill] = useState<KillSwitchStatus | null>(null);
   const [me, setMe] = useState<User | null>(null);
+  // The mark shows which mode the instance is in. Read from the same flag the
+  // order pipeline gates on, so it cannot disagree with reality.
+  const [liveEnabled, setLiveEnabled] = useState(false);
 
   useEffect(() => {
     if (!getToken()) {
@@ -61,6 +65,9 @@ export default function Shell({ children }: { children: ReactNode }) {
     const load = () => api<KillSwitchStatus>("/system/killswitch").then(setKill).catch(() => {});
     load();
     api<User>("/auth/me").then(setMe).catch(() => {});
+    api<{ live_trading_enabled: boolean }>("/system/config")
+      .then((c) => setLiveEnabled(c.live_trading_enabled))
+      .catch(() => {});
     const id = setInterval(load, 10000);
     return () => clearInterval(id);
   }, [router]);
@@ -70,9 +77,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-panel px-4 py-5">
         <div className="mb-7 px-2">
           <div className="flex items-center gap-2">
-            <span className="text-lg font-bold tracking-tight">
-              trader<span className="text-accent">_</span>
-            </span>
+            <Wordmark size="md" live={liveEnabled} />
             <Pill value="paper" label="PAPER" />
           </div>
         </div>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- A tick that is also a price mark: the upstroke continues past the
+       turn, the way a chart does. Cyan is the interface's information
+       colour; the mark stays cyan because a favicon cannot be trusted to
+       track live state across tabs. -->
+  <rect width="32" height="32" rx="7" fill="#0b0e14"/>
+  <path d="M8 17.5l5 5L25 9"
+        fill="none" stroke="#22d3ee" stroke-width="3.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

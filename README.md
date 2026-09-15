@@ -1,4 +1,10 @@
-# trader — broker-agnostic algo trading platform (India)
+# Tick or Trade
+
+Algorithmic trading for Indian markets, at tickortrade.online.
+
+Watch the feed, or act on it — the name is the platform's central
+distinction. Paper and live are separate modes, and live sits behind three
+gates you have to open on purpose.
 
 Production-minded MVP. Connects to Zerodha Kite Connect, Groww Trading API and
 ICICI Direct Breeze through a single broker-adapter interface. **Paper trading

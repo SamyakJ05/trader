@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, setToken } from "@/lib/api";
+import { Wordmark } from "@/components/Wordmark";
 import { Button, ErrorNote, Pill, inputClass, labelClass } from "@/components/ui";
 
 interface AuthResponse {
@@ -88,9 +89,7 @@ export default function LoginPage() {
         className="w-full max-w-sm rounded-xl border border-line bg-panel p-7 shadow-2xl shadow-black/30"
       >
         <div className="mb-1 flex items-center gap-2">
-          <h1 className="text-2xl font-bold tracking-tight">
-            trader<span className="text-accent">_</span>
-          </h1>
+          <h1><Wordmark size="lg" /></h1>
           <Pill value="paper" label="PAPER" />
         </div>
 
