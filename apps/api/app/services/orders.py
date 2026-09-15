@@ -31,9 +31,8 @@ from app.domain.enums import (
 )
 from app.domain.models import OrderRequest
 from app.engines.paper import engine as paper_engine
-from app.engines.paper import market_sim
 from app.engines.risk.engine import RiskEngine
-from app.services import audit
+from app.services import audit, quotes
 
 
 class OrderServiceError(Exception):
@@ -138,10 +137,29 @@ async def _place_order_unchecked(
         payload={"request": request.model_dump(), "account": str(account.id)},
     )
 
-    # TODO(live-quotes): for LIVE accounts the notional/risk checks must use a
-    # real broker quote, not the simulated feed. Blocked on a verified adapter
-    # with market data; until then live dispatch is gated off anyway.
-    last_price = await market_sim.get_price(redis, request.symbol)
+    # Paper prices off the simulator; live prices off a real tick, or not at
+    # all. market_sim.get_price invents a seed price for an unknown symbol,
+    # which is right for a simulation and wrong for a live order — a risk
+    # check that passes against a fabricated number is not a risk check.
+    try:
+        last_price = await quotes.reference_price(
+            db,
+            redis,
+            account=account,
+            symbol=request.symbol,
+            exchange=request.exchange.value,
+        )
+    except quotes.NoQuoteAvailable as exc:
+        await audit.emit(
+            db,
+            AuditEventType.RISK_CHECK,
+            user_id=user_id,
+            entity_type="order_intent",
+            entity_id=client_order_id,
+            correlation_id=client_order_id,
+            payload={"decision": "HALT", "reason": str(exc)},
+        )
+        raise OrderServiceError(str(exc)) from exc
 
     risk = RiskEngine(db, redis)
     result = await risk.evaluate(

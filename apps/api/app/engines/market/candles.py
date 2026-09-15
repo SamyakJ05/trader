@@ -138,3 +138,40 @@ async def history(db, symbol, exchange, interval, source, limit, now=None):
         .all()
     )
     return list(reversed(rows))
+
+
+async def last_close(db, *, symbol, exchange, source="kite", max_age_seconds=None, now=None):
+    """The most recent completed candle's close, or None.
+
+    Used to price a live order when no tick is cached. Returns None rather
+    than the newest row available when that row is older than
+    `max_age_seconds`: a close from before lunch says nothing about the market
+    now, and valuing an order against it could pass a limit the real price
+    would fail.
+    """
+    moment = now or datetime.now(timezone.utc)
+    cutoff = bucket_start(moment, "1m")
+    row = (
+        await db.execute(
+            select(Candle)
+            .where(
+                Candle.symbol == symbol,
+                Candle.exchange == exchange,
+                Candle.interval == "1m",
+                Candle.source == source,
+                Candle.ts < cutoff,
+            )
+            .order_by(Candle.ts.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    if max_age_seconds is not None:
+        ts = row.ts if row.ts.tzinfo else row.ts.replace(tzinfo=timezone.utc)
+        # A one-minute candle is stamped at its start, so its close is up to a
+        # minute newer than its timestamp; allow for that before judging age.
+        age = (moment - ts).total_seconds() - 60
+        if age > max_age_seconds:
+            return None
+    return row.close
