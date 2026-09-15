@@ -396,7 +396,9 @@ async def totp_setup(user: EnrollingUser, db: DbSession):
 
 
 @router.post("/totp/enable", response_model=TotpEnabledOut)
-async def totp_enable(body: TotpEnableBody, user: EnrollingUser, db: DbSession):
+async def totp_enable(
+    body: TotpEnableBody, user: EnrollingUser, session: CurrentSession, db: DbSession
+):
     if totp_service.is_enrolled(user):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Two-factor authentication is already set up"
@@ -410,6 +412,14 @@ async def totp_enable(body: TotpEnableBody, user: EnrollingUser, db: DbSession):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "That code is not valid")
 
     user.totp_enabled_at = datetime.now(timezone.utc)
+    # The session that just finished enrolment must become a full session in
+    # the same request: the frontend navigates onward using this same token,
+    # and without this it would immediately 403 as totp_setup_required on any
+    # route past setup — a redirect loop back to a page that now correctly
+    # refuses, because the account really is enrolled. Same token, no new one
+    # to issue: enrolment_only is the only thing standing between it and a
+    # route gated on FullSessionUser.
+    session.enrolment_only = False
     codes = totp_service.generate_recovery_codes()
     await totp_service.replace_recovery_codes(db, user.id, codes)
     await audit.emit(

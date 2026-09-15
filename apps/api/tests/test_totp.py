@@ -426,3 +426,36 @@ def test_reset_url_points_at_the_web_app():
     from app.services import password_reset as reset_service
 
     assert "/reset-password?token=" in reset_service.reset_url("abc")
+
+
+# ── enable() must flip the caller's own session, not just the user row ──
+
+
+async def test_enabling_totp_upgrades_the_caller_s_own_session(monkeypatch):
+    """Regression: enable() updated the user row but left the session that
+    just finished enrolment still marked enrolment_only. The frontend
+    navigates onward using that same token, so it immediately hit
+    totp_setup_required on the next route and bounced back to a setup page
+    that now correctly refuses — a redirect loop between two endpoints that
+    were each right about a different piece of state that had gone out of
+    sync. Enable is the one place that can bring both into agreement in the
+    same request, since it is the request that changes the user's enrolled
+    state — so it must update the session it was called with too."""
+    from app.api.routes.auth import TotpEnableBody, totp_enable
+
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr("app.api.routes.auth.get_redis", lambda: redis)
+
+    secret = totp_service.new_secret()
+    u = user(enrolled=False)
+    totp_service.store_secret(u, secret)
+    session = SimpleNamespace(enrolment_only=True)
+    code = pyotp.TOTP(secret).now()
+
+    await totp_enable(TotpEnableBody(code=code), u, session, FakeDb())
+
+    assert session.enrolment_only is False, (
+        "enable() must upgrade the caller's own session in the same request, "
+        "not just the user row -- otherwise the token already in the "
+        "frontend's hand keeps failing totp_setup_required after enrolment"
+    )
