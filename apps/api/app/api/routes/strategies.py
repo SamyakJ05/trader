@@ -12,6 +12,7 @@ from app.domain.enums import AuditEventType, Environment, StrategyStatus
 from app.engines.strategy.runner import STRATEGY_REGISTRY
 from app.services import audit, killswitch
 from app.services import brokers as broker_service
+from app.services import instruments as instrument_service
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -83,6 +84,26 @@ async def create_strategy(body: StrategyBody, user: VerifiedUser, db: DbSession)
     account = await broker_service.get_account(db, user.id, body.broker_account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Broker account not found")
+
+    # Symbols are stored as each broker names them, and brokers disagree:
+    # Breeze calls RELIANCE something like RELIND. A strategy naming a symbol
+    # its broker does not recognise would find no candles, emit no signals, and
+    # look merely quiet — so it is refused at creation, while the person
+    # writing it is here to fix it.
+    unknown = await instrument_service.unknown_symbols(
+        db,
+        broker=account.broker,
+        symbols=body.symbols,
+        exchange=body.params.get("exchange", "NSE"),
+    )
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{account.broker} does not recognise: {', '.join(unknown)}. "
+            f"Symbols are stored as each broker names them; sync the "
+            f"instrument master for this account, then use the broker's own codes.",
+        )
+
     strategy = Strategy(
         user_id=user.id,
         name=body.name,

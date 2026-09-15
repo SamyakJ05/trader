@@ -209,3 +209,47 @@ async def test_a_known_symbol_resolves(db, account, monkeypatch):
 
 async def test_an_unknown_symbol_resolves_to_nothing(db):
     assert await inst.resolve_symbol(db, broker="zerodha", symbol="NOSUCHTHING") is None
+
+
+# ── symbols are broker-native ────────────────────────────────────────
+# Brokers name the same instrument differently and this platform stores each
+# broker's own codes. A strategy naming a symbol its broker does not recognise
+# finds no candles and emits no signals — indistinguishable from a quiet
+# market, which is why it is refused at creation instead.
+
+
+async def test_a_symbol_the_broker_does_not_know_is_reported(db, account, monkeypatch):
+    patch_adapter(monkeypatch, [instrument("RELIANCE", "738561")])
+    await inst.sync_instruments(db, account)
+
+    unknown = await inst.unknown_symbols(
+        db, broker="zerodha", symbols=["RELIANCE", "RELIND"]
+    )
+    assert unknown == ["RELIND"], "Breeze's code for the same company is not Zerodha's"
+
+
+async def test_known_symbols_are_not_reported(db, account, monkeypatch):
+    patch_adapter(monkeypatch, [instrument("RELIANCE", "738561"), instrument("INFY", "408065")])
+    await inst.sync_instruments(db, account)
+
+    assert await inst.unknown_symbols(
+        db, broker="zerodha", symbols=["RELIANCE", "INFY"]
+    ) == []
+
+
+async def test_an_unsynced_master_blocks_nothing(db):
+    """A strategy should not be refused because a sync has not run yet —
+    that is our gap, not the user's mistake."""
+    assert await inst.unknown_symbols(
+        db, broker="groww", symbols=["ANYTHING"]
+    ) == []
+
+
+async def test_validation_is_per_broker(db, account, monkeypatch):
+    """The same symbol can be known to one broker and not another; that is the
+    whole reason this check exists."""
+    patch_adapter(monkeypatch, [instrument("RELIANCE", "738561")])
+    await inst.sync_instruments(db, account)
+
+    # Zerodha knows it, and an unsynced Breeze cannot say either way.
+    assert await inst.unknown_symbols(db, broker="zerodha", symbols=["RELIANCE"]) == []

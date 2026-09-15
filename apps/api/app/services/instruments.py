@@ -163,3 +163,37 @@ async def resolve_symbol(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def unknown_symbols(
+    db: AsyncSession, *, broker: str, symbols: list[str], exchange: str = "NSE"
+) -> list[str]:
+    """Which of these symbols the broker's instrument master does not contain.
+
+    Brokers name the same instrument differently — Breeze calls RELIANCE
+    something like RELIND — and this platform stores each broker's own codes.
+    A strategy naming a symbol its broker does not recognise finds no candles
+    and emits no signals, which is indistinguishable from a quiet market. This
+    is what lets that be refused rather than discovered.
+
+    An empty master means we cannot judge, so nothing is reported unknown: a
+    strategy should not be blocked because a sync has not run yet.
+    """
+    if not symbols:
+        return []
+    known = (
+        await db.execute(
+            select(MarketInstrument.symbol).where(
+                MarketInstrument.broker == broker,
+                MarketInstrument.exchange == exchange,
+            )
+        )
+    ).scalars()
+    known_set = set(known)
+    if not known_set:
+        logger.info(
+            "instrument_master_empty", broker=broker, exchange=exchange,
+            detail="cannot validate symbols; allowing",
+        )
+        return []
+    return [s for s in symbols if s not in known_set]

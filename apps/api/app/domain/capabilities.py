@@ -129,7 +129,12 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         exchanges=["NSE", "BSE", "NFO"],
         notes="Adapter scaffolded with Breeze checksum auth wiring. NOT verified "
         "against a live account. Market coverage narrower than Zerodha (no MCX "
-        "in Breeze API as documented).",
+        "in Breeze API as documented). Breeze uses its own stock codes rather "
+        "than NSE trading symbols (RELIANCE is roughly RELIND), and this "
+        "platform stores each broker's native codes: a strategy written "
+        "against NSE symbols will not resolve on a Breeze account, and one "
+        "written for Breeze will not resolve elsewhere. Rate and daily limits "
+        "are enforced client-side per credential ref.",
     ),
 }
 
