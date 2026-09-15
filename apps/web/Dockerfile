@@ -28,30 +28,32 @@ WORKDIR /app
 
 RUN addgroup -g 10001 -S nodejs && adduser -u 10001 -S nextjs -G nodejs
 
-# Confirmed by inspecting the built image directly: standalone output lands
-# at .next/standalone/web/server.js -- nested one level, by package name.
-# Its node_modules/next etc are pnpm symlinks with a *relative* target
-# (../../../node_modules/.pnpm/...) baked in at the depth they existed at in
-# the builder stage: apps/web/node_modules/, three levels below the real
-# pnpm store the deps stage installed at repo-root node_modules/.pnpm.
-# Copying only .next/standalone reproduces the symlinks but not what they
-# point at, and putting them at any other depth breaks the relative path
-# outright -- which is what happened when this first landed at
-# /app/web/node_modules (only two levels under /app): require('next')
-# resolved to /node_modules/.pnpm/..., outside /app entirely.
+# Standalone output lands at .next/standalone/web/server.js -- nested one
+# level, by package name. Its node_modules/next etc are pnpm symlinks with a
+# fixed *relative* target, ../../../node_modules/.pnpm/..., baked in at the
+# depth node_modules existed at in the builder stage: apps/web/node_modules/
+# -- exactly three path segments under /app (apps, web, node_modules) -- so
+# ../../../ from inside it lands squarely on /app, where the deps stage
+# installed the real pnpm store.
 #
-# Fix: reproduce the builder's exact depth. /app/apps/web/web/... puts
-# node_modules three levels under /app, same as the builder had, so the
-# pre-existing relative symlinks resolve on their own -- and the real pnpm
-# store is copied to the same relative target they already point at.
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./apps/web/
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/web/.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/web/public
+# Traced this with actual `cd` hops on the built image rather than counting
+# by eye a second time, because eye-counting got it wrong twice already:
+# copying standalone's contents AS a subdirectory (.../apps/web/web/...)
+# adds a fourth segment, and ../../../ then lands one level short, at
+# /app/apps instead of /app -- a break `find` doesn't reveal, since it does
+# not dereference symlinks by default, but `ls`/`require` do.
+#
+# Fix: copy standalone's *inner* web/ directory's contents directly onto
+# apps/web/, not standalone/ itself as a new subdirectory -- collapsing that
+# extra nesting level back to exactly three segments, matching the builder.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone/web ./apps/web/
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.pnpm ./node_modules/.pnpm
 
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000 HOSTNAME=0.0.0.0
-WORKDIR /app/apps/web/web
+WORKDIR /app/apps/web
 
 CMD ["node", "server.js"]
