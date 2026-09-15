@@ -48,13 +48,16 @@ def order_row(status=OrderStatus.OPEN, broker_order_id="250915000001"):
     )
 
 
-def account_row():
+def account_row(environment="paper"):
+    """Defaults to paper: these tests exercise status reconciliation, and fill
+    booking is live-only (covered in test_live_fills.py)."""
     return SimpleNamespace(
         id=uuid.uuid4(),
         user_id=uuid.uuid4(),
         broker="zerodha",
         broker_client_id="AB1234",
         credential_ref="ZERODHA_MAIN",
+        environment=environment,
     )
 
 

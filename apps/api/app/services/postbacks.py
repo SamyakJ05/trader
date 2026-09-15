@@ -21,7 +21,8 @@ from app.core.config import BrokerEnvCredentials
 from app.core.logging import get_logger
 from app.db.models import BrokerAccount, Order
 from app.domain.enums import AuditEventType, Broker, OrderStatus
-from app.services import audit
+from app.core.redis import get_redis
+from app.services import audit, live_fills
 
 logger = get_logger(__name__)
 
@@ -191,6 +192,14 @@ async def reconcile(db: AsyncSession, account: BrokerAccount, payload: dict) -> 
             "to": order.status,
             "broker_order_id": str(broker_order_id),
         },
+    )
+
+    # Book the fill itself, not just the status. Nothing else does this for a
+    # live order: the paper engine books its own fills and never sees these,
+    # so without this the position would not move and the daily-loss counter
+    # would stay at zero however much the account lost.
+    await live_fills.book_from_payload(
+        db, get_redis(), account=account, order=order, payload=payload
     )
     return order
 
