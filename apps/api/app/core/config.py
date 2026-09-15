@@ -13,17 +13,31 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://trader:trader@localhost:5432/trader"
     redis_url: str = "redis://localhost:6379/0"
 
+    # Connection budget, not a performance dial. Managed Postgres caps
+    # connections per cluster while this application opens pools from every
+    # api worker and the arq worker, so the total has to stay under that cap.
+    # See app/db/session.py for the arithmetic.
+    db_pool_size: int = 3
+    db_max_overflow: int = 2
+    db_pool_recycle_seconds: int = 1800
+    db_pool_timeout_seconds: int = 30
+
     app_secret_key: str = "dev-secret-change-me"
     app_encryption_key: str | None = None
     session_ttl_hours: int = 168
 
     enable_live_trading: bool = False
+
+    # The outbound IP registered with the broker for transactional requests.
+    # Logged and compared at startup so a mismatch surfaces before an order
+    # is rejected for it. Purely diagnostic — it gates nothing.
+    broker_static_ip: str | None = None
     market_hours_enforced: bool = True
 
     # AI trading. Env key is the zero-config fallback; per-user provider
     # settings (anthropic/openai/openrouter/bedrock) live in ai_settings.
     anthropic_api_key: str | None = None
-    ai_model: str = "claude-opus-4-8"
+    ai_model: str = "claude-opus-5"
 
     # Outbound email. Without a key the console backend logs messages instead,
     # so invite and reset links stay usable in development.

@@ -1,0 +1,92 @@
+# Production overlay. Run with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What it changes from the development file: no bind mounts (the image is the
+# artefact, not the working tree), no --reload, explicit restart policies, and
+# Postgres pointed at DigitalOcean's managed instance rather than a container.
+#
+# The database is deliberately not in here. It holds the audit log, the cash
+# ledger and every fill — the one thing that cannot be rebuilt from git — and
+# managed Postgres carries automated backups and point-in-time recovery that a
+# container on one droplet does not.
+
+services:
+  db:
+    # Replaced by DATABASE_URL pointing at DigitalOcean managed Postgres. Kept
+    # as a no-op so the base file's depends_on stays satisfiable.
+    profiles: ["never"]
+
+  redis:
+    restart: unless-stopped
+    # Append-only persistence. Redis is no longer the system of record for the
+    # daily-loss counter, but kill switches and rate-limit state still live
+    # here and should survive a restart.
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+    volumes:
+      - redisdata:/data
+    ports: []          # not exposed off the host
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./apps/api
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+      --proxy-headers --forwarded-allow-ips='*'
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?managed Postgres URL is required}
+      REDIS_URL: redis://redis:6379/0
+    volumes: []        # the image is the artefact
+    ports:
+      - "127.0.0.1:8000:8000"   # reachable only through the proxy
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/healthz', timeout=4).status==200 else 1)\""]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    build:
+      context: ./apps/api
+    command: arq app.workers.worker.WorkerSettings
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?managed Postgres URL is required}
+      REDIS_URL: redis://redis:6379/0
+    volumes: []
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        # Baked in at build time: Next inlines public env vars, so this cannot
+        # be supplied at run time.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?public API URL is required}
+    image: tickortrade-web
+    restart: unless-stopped
+    command: ["node", "server.js"]
+    environment: {}
+    volumes: []
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  redisdata:

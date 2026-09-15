@@ -30,10 +30,10 @@ from app.db.models import AISettings
 PROVIDERS = ("anthropic", "openai", "openrouter", "bedrock")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODELS = {
-    "anthropic": "claude-opus-4-8",
+    "anthropic": "claude-opus-5",
     "openai": "gpt-4o",
-    "openrouter": "anthropic/claude-opus-4.8",
-    "bedrock": "anthropic.claude-opus-4-8",
+    "openrouter": "anthropic/claude-opus-5",
+    "bedrock": "anthropic.claude-opus-5",
 }
 _MAX_TOKENS = 4096
 
