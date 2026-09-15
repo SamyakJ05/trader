@@ -126,8 +126,18 @@ async def test_different_names_do_not_share_a_budget():
 
 async def test_concurrent_takes_do_not_oversubscribe():
     """Read-refill-take in separate round trips would let two callers both see
-    the last token and both take it. The Lua script makes it atomic."""
-    lim = limiter(rate_per_second=1000, burst=5)
+    the last token and both take it. The Lua script makes it atomic.
+
+    Rate is deliberately slow (1/s): asyncio.gather does not dispatch its
+    coroutines simultaneously, so real (if small) wall-clock time elapses
+    across the ten round trips to Redis. At a fast rate that gap is enough
+    for a genuine fractional token to refill mid-burst -- correct bucket
+    behaviour, not a race -- which would make this assert something the
+    bucket was never designed to guarantee. A slow rate keeps any refill
+    across the whole gather well under one token, isolating the property
+    this test actually exists to check: that the read-refill-take is atomic,
+    not that time stands still."""
+    lim = limiter(rate_per_second=1, burst=5)
     results = await asyncio.gather(*(lim._try_take(1) for _ in range(10)))
     granted = sum(1 for wait in results if wait == 0)
     assert granted == 5, f"exactly the burst should be granted, got {granted}"

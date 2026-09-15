@@ -25,13 +25,22 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 # Take a token if one is available; otherwise report how long until one is.
-# KEYS[1] bucket, ARGV: rate per second, burst, now (seconds, float), cost.
+# KEYS[1] bucket, ARGV: rate per second, burst, cost.
+#
+# The clock is read with redis.call('TIME') inside the script, not passed in
+# from Python. At a high rate (Kite's quote bucket is 1000/s in tests) even a
+# few microseconds of asyncio dispatch jitter between concurrent callers is
+# enough real time for a fractional token to refill -- so two callers with
+# their own now values could each see room for one more than the burst
+# actually allows, even though the read-refill-take itself is atomic. One
+# shared clock read inside the same atomic script closes that gap.
 _TAKE = """
 local key = KEYS[1]
 local rate = tonumber(ARGV[1])
 local burst = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-local cost = tonumber(ARGV[4])
+local cost = tonumber(ARGV[3])
+local time_parts = redis.call('TIME')
+local now = tonumber(time_parts[1]) + tonumber(time_parts[2]) / 1000000
 
 local state = redis.call('HMGET', key, 'tokens', 'ts')
 local tokens = tonumber(state[1])
@@ -86,7 +95,7 @@ class RateLimiter:
         """Seconds to wait before a token is available; 0 means taken."""
         raw = await self._script(
             keys=[self.key],
-            args=[self._rate, self._burst, time.time(), cost],
+            args=[self._rate, self._burst, cost],
         )
         return float(raw)
 
