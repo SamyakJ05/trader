@@ -49,3 +49,31 @@ def test_a_live_strategy_may_name_a_non_simulated_source():
 def test_the_live_source_is_distinct_from_the_simulator():
     """If these ever collided, the refusal above would silently stop firing."""
     assert LIVE_SOURCE != "simulator"
+
+
+# ── each broker's live candles are its own ───────────────────────────
+
+
+def test_each_broker_tags_its_live_candles_differently():
+    """Two brokers do not use the same code for the same instrument — Breeze's
+    RELIND is Kite's RELIANCE — so their candles must never merge into one
+    series. Distinct source tags are what keeps them apart."""
+    from app.workers.tick_stream import LIVE_SOURCES
+
+    assert LIVE_SOURCES["zerodha"] != LIVE_SOURCES["icici_breeze"]
+    assert "simulator" not in LIVE_SOURCES.values()
+
+
+def test_a_live_breeze_strategy_reads_breeze_candles():
+    from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
+
+    def resolve(broker, environment, params):
+        is_live = environment == "live"
+        source = params.get("source") or (
+            LIVE_SOURCES.get(broker, LIVE_SOURCE) if is_live else "simulator"
+        )
+        return None if (is_live and source == "simulator") else source
+
+    assert resolve("icici_breeze", "live", {}) == "breeze"
+    assert resolve("zerodha", "live", {}) == "kite"
+    assert resolve("icici_breeze", "paper", {}) == "simulator"

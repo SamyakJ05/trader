@@ -24,7 +24,7 @@ from app.domain.enums import (
 )
 from app.domain.models import OrderRequest
 from app.engines.paper import market_sim
-from app.workers.tick_stream import LIVE_SOURCE as LIVE_CANDLE_SOURCE
+from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
 from app.engines.market.candles import history as candle_history
 from app.engines.strategy.ai_agent import AiAgentStrategy
 from app.engines.strategy.base import AsyncStrategyBase, Signal, StrategyBase, StrategyContext
@@ -165,7 +165,10 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
         # invented prices and looks like it is working.
         is_live = account.environment == Environment.LIVE.value
         source = strategy.params.get("source") or (
-            LIVE_CANDLE_SOURCE if is_live else "simulator"
+            # Each broker's live candles carry its own source tag, and they do
+            # not interchange: the two brokers do not even use the same codes
+            # for the same instrument.
+            LIVE_SOURCES.get(account.broker, LIVE_SOURCE) if is_live else "simulator"
         )
         if is_live and source == "simulator":
             logger.error(

@@ -27,6 +27,10 @@ dependencies = [
     # Twisted with it; the reactor is confined to the Zerodha adapter and runs
     # on its own thread so it never touches the asyncio loop the app runs on.
     "kiteconnect>=5.0",
+    # ICICI Breeze streams over socket.io. Unlike Kite's SDK this has a native
+    # asyncio client, so it needs no thread bridge — the connection lives on
+    # the same loop as everything else.
+    "python-socketio[asyncio_client]>=5.11",
 ]
 
 [project.optional-dependencies]

@@ -37,6 +37,7 @@ from app.adapters.base import (
     FeatureNotSupportedError,
     SessionExpiredError,
 )
+from app.adapters.icici_breeze.stream import BreezeTickStream
 from app.adapters.throttle import DailyQuotaExceeded, breeze_limiter, breeze_quota
 from app.core.logging import get_logger
 from app.core.redis import get_redis
@@ -472,5 +473,34 @@ class BreezeAdapter(BrokerAdapter):
             # should not cost the rest.
             return None
 
+    async def tick_feed(self, token_to_symbol: dict) -> BreezeTickStream:
+        """A started Breeze tick stream.
+
+        Takes the same mapping shape as the Kite feed so one supervisor can
+        drive either, but Breeze subscribes by stock code rather than numeric
+        token — the values are what it needs, and the keys are ignored.
+        """
+        if not self.account.session_token_enc:
+            raise SessionExpiredError("Breeze ticks need a live session; connect first")
+        if not self.account.broker_client_id:
+            raise SessionExpiredError(
+                "Breeze streaming needs the account's user id; re-run the session exchange"
+            )
+        stream = BreezeTickStream(
+            user_id=self.account.broker_client_id,
+            session_key=decrypt_secret(self.account.session_token_enc),
+            stock_codes=sorted(set(token_to_symbol.values())),
+        )
+        await stream.start()
+        return stream
+
     def subscribe_ticks(self, symbols: list[str]) -> AsyncIterator[Tick]:
-        raise FeatureNotSupportedError("Breeze streaming (socket.io) not implemented yet")
+        """Not supported through this interface.
+
+        Kept refusing for the same reason as Kite's: the base interface hands
+        back a bare iterator, but a socket.io connection has a lifetime that
+        someone has to own and close. tick_feed returns the stream itself.
+        """
+        raise FeatureNotSupportedError(
+            "Breeze streams have a lifetime to manage — use tick_feed()"
+        )

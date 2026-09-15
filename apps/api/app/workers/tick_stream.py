@@ -34,7 +34,18 @@ RECONNECT_DELAY_SECONDS = 15
 # Ticks are recorded as candles under this source, which keeps live data and
 # imported history distinguishable — a backtest must be able to say which it
 # ran on.
-LIVE_SOURCE = "kite"
+# Candles from a live feed are tagged by broker, so a backtest can say which
+# feed it ran on and two brokers' data for the same instrument never merge —
+# they do not even use the same codes.
+LIVE_SOURCES = {
+    Broker.ZERODHA.value: "kite",
+    Broker.ICICI_BREEZE.value: "breeze",
+}
+
+# Retained for callers that predate per-broker sources.
+LIVE_SOURCE = LIVE_SOURCES[Broker.ZERODHA.value]
+
+_STREAMING_BROKERS = set(LIVE_SOURCES)
 
 
 async def _symbols_for(db, account: BrokerAccount) -> list[str]:
@@ -96,6 +107,7 @@ async def _run_once(account_id) -> None:
             return
 
         adapter = get_adapter(account)
+        source = LIVE_SOURCES.get(account.broker, LIVE_SOURCE)
         feed = await adapter.tick_feed(token_map)
 
     redis = get_redis()
@@ -112,7 +124,7 @@ async def _run_once(account_id) -> None:
             )
             async with async_session_factory() as db:
                 try:
-                    await record_tick(db, tick, source=LIVE_SOURCE)
+                    await record_tick(db, tick, source=source)
                     await db.commit()
                 except Exception:
                     await db.rollback()
@@ -125,7 +137,7 @@ async def live_accounts(db) -> list[BrokerAccount]:
     """Connected live accounts on brokers that can stream."""
     result = await db.execute(
         select(BrokerAccount).where(
-            BrokerAccount.broker == Broker.ZERODHA.value,
+            BrokerAccount.broker.in_(_STREAMING_BROKERS),
             BrokerAccount.environment == Environment.LIVE.value,
             BrokerAccount.status == BrokerAccountStatus.CONNECTED.value,
         )
