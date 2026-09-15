@@ -234,13 +234,17 @@ GST_RATE = _CURRENT.gst_rate
 DP_CHARGE_PER_SCRIP = _CURRENT.dp_charge_per_scrip
 
 # ICICI Direct is its own depository participant, so its DP charge is not
-# Zerodha's. Rs 20 plus GST per scrip per day on delivery sells, once per
-# scrip regardless of quantity or how many sell orders.
+# Zerodha's. Rs 20 plus 18% GST = Rs 23.60 per scrip per day on delivery
+# sells, once per scrip regardless of quantity or how many sell orders.
 #
-# NOT confirmed from ICICI's own FAQ text — corroborated across independent
-# secondary sources and consistent with their long-published pricing, but
-# their FAQ page would not render its answer body. Worth one call to confirm;
-# the charge breakdown says so.
+# Confirmed against ICICI's own pages (icicidirect.com/ilearn/stocks/articles/
+# what-do-dp-charges-mean and /faqs/stocks/what-are-demat-charges), which
+# publish the Rs 20 base and leave the statutory GST out of the headline
+# figure — hence the two-part constant here rather than one number.
+#
+# Worth knowing when reconciling: DP charges are debited from the ledger by
+# the depository participant and do NOT appear on the equity contract note, so
+# a contract note that omits them is not evidence they were not charged.
 ICICI_DP_CHARGE_BASE = Decimal("20.00")
 ICICI_DP_CHARGE_PER_SCRIP = (ICICI_DP_CHARGE_BASE * (Decimal(1) + GST_RATE)).quantize(
     Decimal("0.01")

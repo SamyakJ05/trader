@@ -556,13 +556,23 @@ def test_icici_dp_charge_is_its_own_not_zerodhas():
     assert icici.dp_charges != zerodha.dp_charges
 
 
-def test_the_icici_dp_figure_is_flagged_as_unconfirmed():
-    """Corroborated from secondary sources, not ICICI's own FAQ text."""
+def test_the_dp_charge_explains_why_a_contract_note_omits_it():
+    """DP charges are debited from the ledger by the depository participant,
+    not shown on the equity contract note — so reconciling against a note and
+    finding no DP line is not evidence it was not charged."""
     breakdown = compute_charges(
         broker=Broker.ICICI_BREEZE, side=OrderSide.SELL, product=ProductType.CNC,
         quantity=100, price=Decimal("1000"),
     )
-    assert any("confirming" in note for note in breakdown.notes)
+    assert any("contract note" in note for note in breakdown.notes)
+
+
+def test_the_icici_dp_charge_is_base_plus_gst():
+    """ICICI publish Rs 20 and leave the statutory 18% out of the headline."""
+    from app.engines.paper import rates as rate_module
+
+    assert rate_module.ICICI_DP_CHARGE_BASE == Decimal("20.00")
+    assert rate_module.ICICI_DP_CHARGE_PER_SCRIP == Decimal("23.60")
 
 
 def test_icici_no_longer_carries_the_placeholder_note():

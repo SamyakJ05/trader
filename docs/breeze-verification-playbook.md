@@ -240,10 +240,15 @@ test in the same commit, saying what you verified and when.
 4. **The order did not duplicate.** Breeze's `user_remark` is a label, not an
    idempotency key — our own `client_order_id` uniqueness is the only guard, so
    this is worth confirming rather than assuming
-5. **Charges** once it fills or cancels — compare against ICICI's contract note
-   the next morning. ICICI's brokerage is not Zerodha's, and
-   `app/engines/paper/brokerage.py` currently applies a Zerodha-shaped plan to
-   Breeze as a placeholder. **Expect this to be wrong and correct it.**
+5. **Charges** once it fills or cancels. Brokerage, STT and the rest appear on
+   ICICI's contract note the next morning, and should match what the platform
+   predicted — this instance is configured for Prime 999 (0.22% delivery,
+   0.022% intraday), so check that is still your plan.
+
+   **The DP charge will not be on the contract note.** It is debited from your
+   ledger by the depository participant rather than billed with the trade, so
+   a note showing no DP line is not evidence you were not charged ₹23.60.
+   Check the ledger for it, not the note.
 
 ### 5.4 Cancel it
 

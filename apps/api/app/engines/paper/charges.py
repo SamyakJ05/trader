@@ -155,9 +155,9 @@ def compute_charges(
             # for the other misstates every delivery sell.
             breakdown.dp_charges = broker_dp
             breakdown.notes.append(
-                "DP charge applies once per scrip per day. This broker's "
-                "figure is corroborated from secondary sources, not its own "
-                "published FAQ — worth confirming"
+                "DP charge applies once per scrip per day. It is debited from "
+                "the ledger rather than shown on the contract note, so a note "
+                "that omits it is not evidence it was not charged"
             )
         elif rateset.dp_charge_per_scrip is None:
             breakdown.notes.append(
