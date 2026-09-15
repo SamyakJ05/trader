@@ -52,6 +52,56 @@ class ZeroBrokeragePlan(BrokeragePlan):
         return Decimal("0")
 
 
+class IciciPrimePlan(BrokeragePlan):
+    """ICICI Direct Prime — percentage of turnover, no cap and no floor.
+
+    Structurally unlike a discount broker: Zerodha charges nothing on delivery
+    and caps intraday at Rs 20, while this is a straight percentage that scales
+    with the order. On a Rs 1 lakh delivery buy that is Rs 220 rather than Rs 0,
+    and on a large order there is nothing to stop it growing.
+
+    Rates verified from icicidirect.com/brokerage/prime-plan on 2026-09-15:
+    Prime 999 0.22% delivery / 0.022% intraday; Prime 4999 0.10% / 0.010%;
+    Prime 9999 0.07% / 0.007%. The same page states there is no minimum
+    brokerage on equity delivery, contradicting the "or Rs 25, whichever is
+    higher" floor that circulates on aggregator sites.
+
+    The subscriptions are one-time rather than annual, so they are a sunk cost
+    outside this per-trade calculation.
+    """
+
+    TIERS = {
+        999: (Decimal("0.0022"), Decimal("0.00022")),
+        4999: (Decimal("0.0010"), Decimal("0.00010")),
+        9999: (Decimal("0.0007"), Decimal("0.00007")),
+    }
+
+    def __init__(self, tier: int = 999):
+        if tier not in self.TIERS:
+            raise ValueError(f"Unknown ICICI Prime tier {tier}; expected {sorted(self.TIERS)}")
+        self.tier = tier
+        self.delivery_rate, self.intraday_rate = self.TIERS[tier]
+        self.name = f"icici_prime_{tier}"
+
+    def charge(self, product: ProductType, turnover: Decimal) -> Decimal:
+        rate = self.delivery_rate if product == ProductType.CNC else self.intraday_rate
+        return turnover * rate
+
+
+class IciciMoneySaverPlan(IciciPrimePlan):
+    """ICICI Direct's default plan, applied when no other has been chosen.
+
+    0.29% delivery, 0.029% intraday — the most expensive of their retail
+    options, and what an account sits on if nobody opted into anything.
+    """
+
+    def __init__(self):
+        self.tier = 0
+        self.delivery_rate = Decimal("0.0029")
+        self.intraday_rate = Decimal("0.00029")
+        self.name = "icici_moneysaver"
+
+
 class PlaceholderPlan(ZerodhaPlan):
     """Zerodha-shaped pricing standing in for a broker whose real plan is not
     yet encoded.
@@ -75,7 +125,11 @@ _PLANS: dict[Broker, BrokeragePlan] = {
     Broker.PAPER: ZeroBrokeragePlan(),
     Broker.ZERODHA: ZerodhaPlan(),
     Broker.GROWW: PlaceholderPlan(),
-    Broker.ICICI_BREEZE: PlaceholderPlan(),
+    # This instance's ICICI account is on Prime 999. An account on a different
+    # plan pays a different rate — MoneySaver is nearly a third more on
+    # delivery — so this is per-instance configuration, not a fact about the
+    # broker.
+    Broker.ICICI_BREEZE: IciciPrimePlan(999),
 }
 
 

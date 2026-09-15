@@ -422,21 +422,21 @@ def test_the_breakdown_names_the_rate_period_it_used():
 # ── placeholder brokerage is declared, not silent ────────────────────
 
 
-def test_breeze_brokerage_is_flagged_as_a_placeholder():
-    """ICICI Direct is a full-service broker whose percentage rates with a
-    per-order floor are nothing like Zerodha's flat cap. Until its real plan is
-    encoded, every P&L on a Breeze account is wrong in the same direction —
-    and a consistent bias is what survives a glance at the numbers."""
+def test_an_unencoded_broker_is_flagged_as_a_placeholder():
+    """A placeholder makes every P&L on that broker wrong in the same
+    direction, and a consistent bias is what survives a glance at the numbers.
+    Groww still carries one; ICICI and Zerodha have their real plans."""
     from app.engines.paper.brokerage import is_placeholder
 
-    assert is_placeholder(Broker.ICICI_BREEZE)
+    assert is_placeholder(Broker.GROWW)
+    assert not is_placeholder(Broker.ICICI_BREEZE)
     assert not is_placeholder(Broker.ZERODHA)
     assert not is_placeholder(Broker.PAPER)
 
 
 def test_a_placeholder_says_so_on_the_breakdown():
     breakdown = compute_charges(
-        broker=Broker.ICICI_BREEZE,
+        broker=Broker.GROWW,
         side=OrderSide.BUY,
         product=ProductType.CNC,
         quantity=100,
@@ -454,3 +454,118 @@ def test_a_real_plan_carries_no_placeholder_note():
         price=Decimal("1000"),
     )
     assert not any("placeholder" in note for note in breakdown.notes)
+
+
+# ── ICICI Direct's real plan ─────────────────────────────────────────
+# Verified from icicidirect.com/brokerage/prime-plan on 2026-09-15. ICICI is a
+# full-service broker: percentage rates with no cap and no floor, and it
+# charges on delivery where Zerodha charges nothing.
+
+
+def test_icici_prime_999_delivery_rate():
+    """0.22% of Rs 1,00,000 = Rs 220, against Zerodha's zero."""
+    breakdown = compute_charges(
+        broker=Broker.ICICI_BREEZE,
+        side=OrderSide.BUY,
+        product=ProductType.CNC,
+        quantity=100,
+        price=Decimal("1000"),
+    )
+    assert breakdown.brokerage == Decimal("220.00")
+
+
+def test_icici_prime_999_intraday_rate():
+    """0.022% of Rs 1,00,000 = Rs 22 — and unlike Zerodha there is no Rs 20
+    cap, so it keeps scaling with the order."""
+    breakdown = compute_charges(
+        broker=Broker.ICICI_BREEZE,
+        side=OrderSide.BUY,
+        product=ProductType.MIS,
+        quantity=100,
+        price=Decimal("1000"),
+    )
+    assert breakdown.brokerage == Decimal("22.00")
+
+
+def test_icici_brokerage_has_no_cap():
+    """A discount broker's flat cap makes a large order cheap; a percentage
+    does not. On Rs 10 lakh that is Rs 2,200, not Rs 20."""
+    breakdown = compute_charges(
+        broker=Broker.ICICI_BREEZE,
+        side=OrderSide.BUY,
+        product=ProductType.CNC,
+        quantity=1000,
+        price=Decimal("1000"),
+    )
+    assert breakdown.brokerage == Decimal("2200.00")
+
+
+def test_icici_has_no_minimum_brokerage():
+    """Their own page states there is no minimum on equity delivery,
+    contradicting the 'or Rs 25, whichever is higher' floor that circulates on
+    aggregator sites. A floor would overstate every small order."""
+    breakdown = compute_charges(
+        broker=Broker.ICICI_BREEZE,
+        side=OrderSide.BUY,
+        product=ProductType.CNC,
+        quantity=1,
+        price=Decimal("100"),
+    )
+    assert breakdown.brokerage == Decimal("0.22")
+
+
+def test_the_prime_tiers_differ():
+    from app.engines.paper.brokerage import IciciPrimePlan
+
+    turnover = Decimal("100000")
+    assert IciciPrimePlan(999).charge(ProductType.CNC, turnover) == Decimal("220.000")
+    assert IciciPrimePlan(4999).charge(ProductType.CNC, turnover) == Decimal("100.000")
+    assert IciciPrimePlan(9999).charge(ProductType.CNC, turnover) == Decimal("70.000")
+
+
+def test_the_default_plan_costs_more_than_prime():
+    """MoneySaver is what an account sits on if nobody opted in — 0.29%,
+    nearly a third more than Prime 999."""
+    from app.engines.paper.brokerage import IciciMoneySaverPlan, IciciPrimePlan
+
+    turnover = Decimal("100000")
+    assert IciciMoneySaverPlan().charge(ProductType.CNC, turnover) > IciciPrimePlan(
+        999
+    ).charge(ProductType.CNC, turnover)
+
+
+def test_an_unknown_prime_tier_is_refused():
+    from app.engines.paper.brokerage import IciciPrimePlan
+
+    with pytest.raises(ValueError):
+        IciciPrimePlan(1234)
+
+
+def test_icici_dp_charge_is_its_own_not_zerodhas():
+    """ICICI is its own depository participant; reusing Zerodha's CDSL figure
+    would misstate every delivery sell."""
+    icici = compute_charges(
+        broker=Broker.ICICI_BREEZE, side=OrderSide.SELL, product=ProductType.CNC,
+        quantity=100, price=Decimal("1000"),
+    )
+    zerodha = compute_charges(
+        broker=Broker.ZERODHA, side=OrderSide.SELL, product=ProductType.CNC,
+        quantity=100, price=Decimal("1000"),
+    )
+    assert icici.dp_charges == Decimal("23.60")  # Rs 20 + 18% GST
+    assert icici.dp_charges != zerodha.dp_charges
+
+
+def test_the_icici_dp_figure_is_flagged_as_unconfirmed():
+    """Corroborated from secondary sources, not ICICI's own FAQ text."""
+    breakdown = compute_charges(
+        broker=Broker.ICICI_BREEZE, side=OrderSide.SELL, product=ProductType.CNC,
+        quantity=100, price=Decimal("1000"),
+    )
+    assert any("confirming" in note for note in breakdown.notes)
+
+
+def test_icici_no_longer_carries_the_placeholder_note():
+    from app.engines.paper.brokerage import is_placeholder
+
+    assert not is_placeholder(Broker.ICICI_BREEZE)

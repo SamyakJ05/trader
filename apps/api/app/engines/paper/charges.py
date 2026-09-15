@@ -146,7 +146,20 @@ def compute_charges(
     # Delivery sells debit the demat account, which is what triggers the DP
     # charge. Flat per scrip per day: quantity does not matter.
     if is_delivery and not is_buy and is_first_sell_of_scrip_today:
-        if rateset.dp_charge_per_scrip is None:
+        broker_dp = rates.DP_CHARGE_BY_BROKER.get(
+            str(getattr(broker, "value", broker))
+        )
+        if broker_dp is not None and rateset.dp_charge_per_scrip is not None:
+            # The depository participant differs by broker: ICICI is its own,
+            # where Zerodha routes through CDSL. Reusing one broker's figure
+            # for the other misstates every delivery sell.
+            breakdown.dp_charges = broker_dp
+            breakdown.notes.append(
+                "DP charge applies once per scrip per day. This broker's "
+                "figure is corroborated from secondary sources, not its own "
+                "published FAQ — worth confirming"
+            )
+        elif rateset.dp_charge_per_scrip is None:
             breakdown.notes.append(
                 "DP charge not modelled before 2024-10-01 (CDSL used slab "
                 "rates that could not be recovered); delivery cost is "

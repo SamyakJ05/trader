@@ -232,3 +232,20 @@ STAMP_DELIVERY_BUY = _CURRENT.stamp_delivery_buy
 STAMP_INTRADAY_BUY = _CURRENT.stamp_intraday_buy
 GST_RATE = _CURRENT.gst_rate
 DP_CHARGE_PER_SCRIP = _CURRENT.dp_charge_per_scrip
+
+# ICICI Direct is its own depository participant, so its DP charge is not
+# Zerodha's. Rs 20 plus GST per scrip per day on delivery sells, once per
+# scrip regardless of quantity or how many sell orders.
+#
+# NOT confirmed from ICICI's own FAQ text — corroborated across independent
+# secondary sources and consistent with their long-published pricing, but
+# their FAQ page would not render its answer body. Worth one call to confirm;
+# the charge breakdown says so.
+ICICI_DP_CHARGE_BASE = Decimal("20.00")
+ICICI_DP_CHARGE_PER_SCRIP = (ICICI_DP_CHARGE_BASE * (Decimal(1) + GST_RATE)).quantize(
+    Decimal("0.01")
+)
+
+DP_CHARGE_BY_BROKER = {
+    "icici_breeze": ICICI_DP_CHARGE_PER_SCRIP,
+}
