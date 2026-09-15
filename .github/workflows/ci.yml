@@ -90,9 +90,10 @@ jobs:
     # that same file or the install fails before any test runs.
     steps:
       - uses: actions/checkout@v4
+      # No version: here -- package.json's packageManager field already
+      # pins pnpm@9.15.4, and the action refuses to run if both are set
+      # ("Multiple versions of pnpm specified"), which is what failed here.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
