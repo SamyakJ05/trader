@@ -41,8 +41,6 @@ export default function BrokersPage() {
     // Hold the value until accounts have loaded, so it can be matched to the
     // right one rather than guessed at before the list exists.
     const apisession = params.get("apisession");
-    // eslint-disable-next-line no-console
-    console.debug("[breeze-redirect] url search:", window.location.search, "apisession:", apisession);
     if (apisession) setPendingApiSession(apisession);
     if (params.get("connected") || params.get("error") || apisession) {
       window.history.replaceState(null, "", "/brokers");
@@ -51,19 +49,26 @@ export default function BrokersPage() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.debug("[breeze-redirect] effect2 pendingApiSession:", pendingApiSession, "accounts:", accounts?.length);
     if (!pendingApiSession || !accounts) return;
     const breeze = accounts.filter((a) => a.broker === "icici_breeze");
     if (breeze.length === 1) {
       setTokenError(null);
       setTokenFor(breeze[0]);
+      // pendingApiSession stays set here, deliberately: the modal reads it
+      // via initialToken on the render this same effect triggers by calling
+      // setTokenFor, and clearing it in the same batch raced that prop to
+      // undefined before the modal ever saw it (confirmed live: the effect's
+      // own log line showed pendingApiSession flip to null in the exact
+      // render where the modal should have opened pre-filled, and it opened
+      // empty instead). Clearing happens once the modal actually closes --
+      // see the SessionTokenModal onClose/onSubmit handlers below.
     } else if (breeze.length === 0) {
       push("error", "Signed in to ICICI, but no icici_breeze account exists yet — add one, then paste the token manually.");
+      setPendingApiSession(null);
     } else {
       push("info", "Signed in to ICICI — click “Set token” on the right Breeze account to paste it.");
+      setPendingApiSession(null);
     }
-    setPendingApiSession((current) => (breeze.length === 1 ? null : current));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingApiSession, accounts]);
 
