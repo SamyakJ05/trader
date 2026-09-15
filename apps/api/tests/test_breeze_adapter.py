@@ -8,7 +8,6 @@ pin the differences.
 Nothing here reaches the network; the adapter is still SCAFFOLD.
 """
 
-import base64
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -47,13 +46,18 @@ def order(product=ProductType.CNC, order_type=OrderType.LIMIT, price=Decimal("28
 # ── the session header ───────────────────────────────────────────────
 
 
-def test_the_session_header_is_a_base64_credential_pair(monkeypatch):
-    """Breeze wants base64(user_id:session_key), the way HTTP Basic encodes a
-    pair. Sending the token verbatim — which a Kite-shaped adapter would —
-    fails every authenticated call, and the error does not say why."""
+def test_the_session_header_is_the_stored_session_key_verbatim(monkeypatch):
+    """Regression: this used to re-encode base64(user_id:session_key), on the
+    assumption Breeze wanted an HTTP-Basic-style pair built here. It does
+    not — decoding a real sample from Breeze's own docs
+    ("QUgzNzkzMDA6NDUwNTM0MjI=" -> "AH379300:45053422") shows the
+    session_token /customerdetails returns IS ALREADY that encoded pair.
+    Re-encoding it wrapped it a second time: syntactically valid base64, so
+    nothing here ever caught it, but garbage once Breeze decoded it — the
+    live cause of a well-formed, correctly-checksummed call failing with
+    "Invalid User Details". The fix is to do nothing to it."""
     headers = adapter(monkeypatch)._signed_headers({})
-    decoded = base64.b64decode(headers["X-SessionToken"]).decode()
-    assert decoded == "ICICI123:sess-key"
+    assert headers["X-SessionToken"] == "sess-key"
 
 
 def test_signing_without_a_user_id_is_refused(monkeypatch):
@@ -300,64 +304,26 @@ async def test_an_exchange_without_a_session_token_is_refused(monkeypatch):
         await a.exchange_session("api-session")
 
 
-# ── /customerdetails takes a different shape than every other endpoint ─
-# Breeze's docs: no checksum headers on this one, SessionToken/AppKey as
-# body fields instead. Sending it through the generic signed _request (empty
-# body, checksum headers attached) produced a live "Request Object is Null"
-# from Breeze — this pins the correct shape so it cannot regress silently.
+# ── get_profile reports the exchange's own result, not a fresh call ────
+# /customerdetails's SessionToken field wants the raw, one-time API_Session
+# value from the login redirect -- never persisted, by design, once spent.
+# A first version called /customerdetails again using the stored, already-
+# exchanged session key in that field, which is structurally the wrong value
+# and got a live "Invalid session" back. There is nothing to gain by trying
+# a shape that can never succeed: exchange_session already captured
+# broker_client_id (idirect_userid) the moment the exchange succeeded, so
+# get_profile now just reports that instead of calling out again.
 
 
-async def test_get_profile_sends_session_and_app_key_in_the_body(monkeypatch):
-    import fakeredis.aioredis
-
-    from app.adapters.icici_breeze import adapter as adapter_module
-
-    a = adapter(monkeypatch)
-    monkeypatch.setattr(
-        adapter_module, "get_redis", lambda: fakeredis.aioredis.FakeRedis(decode_responses=True)
-    )
-    captured = {}
-
-    async def fake_request(self, method, path, **kwargs):
-        captured["method"] = method
-        captured["path"] = path
-        captured["headers"] = kwargs.get("headers")
-        captured["json"] = kwargs.get("json")
-        return FakeResponse({"Success": {"idirect_userid": "ICICI123", "idirect_user_name": "Someone"}})
-
-    import httpx
-
-    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
-
+async def test_get_profile_reports_the_stored_user_id_without_a_network_call(monkeypatch):
+    a = adapter(monkeypatch, user_id="ICICI123")
     profile = await a.get_profile()
-
-    assert captured["path"] == "/customerdetails"
-    assert captured["json"] == {"SessionToken": "sess-key", "AppKey": "app-key"}
-    assert captured["headers"] is None, (
-        "customerdetails takes no headers at all per Breeze's docs — sending "
-        "the checksum headers here is the bug this test exists to catch"
-    )
     assert profile.broker_client_id == "ICICI123"
 
 
 async def test_get_profile_without_a_session_is_refused(monkeypatch):
     a = adapter(monkeypatch, session=None, user_id=None)
     with pytest.raises(SessionExpiredError, match="login flow"):
-        await a.get_profile()
-
-
-async def test_get_profile_surfaces_breezes_error_text(monkeypatch):
-    import fakeredis.aioredis
-
-    from app.adapters.icici_breeze import adapter as adapter_module
-
-    a = adapter(monkeypatch)
-    monkeypatch.setattr(
-        adapter_module, "get_redis", lambda: fakeredis.aioredis.FakeRedis(decode_responses=True)
-    )
-    patch_exchange(monkeypatch, {"Error": "Request Object is Null"}, status_code=200)
-
-    with pytest.raises(BrokerError, match="Request Object is Null"):
         await a.get_profile()
 
 

@@ -18,7 +18,6 @@ documents its limits per user and exceeding them blocks the account rather
 than returning a retryable error.
 """
 
-import base64
 import csv
 import hashlib
 import io
@@ -209,15 +208,23 @@ class BreezeAdapter(BrokerAdapter):
         }
 
     def _session_header(self) -> str:
+        # The value /customerdetails returns as session_token IS ALREADY
+        # base64(user_id + ":" + the actual key) -- decoded a sample from
+        # Breeze's own docs to confirm: "QUgzNzkzMDA6NDUwNTM0MjI=" decodes to
+        # "AH379300:45053422", the pair itself, not a bare key that this
+        # adapter should be pairing and encoding again. Doing so anyway wraps
+        # it a second time, producing a header that still looks like valid
+        # base64 (so nothing here would ever catch it) and decodes to
+        # garbage on Breeze's end -- which is exactly what a real
+        # "Invalid User Details" from a well-formed, correctly-checksummed
+        # call turned out to be.
         session_key = decrypt_secret(self.account.session_token_enc)
-        user_id = self.account.broker_client_id
-        if not user_id:
+        if not self.account.broker_client_id:
             raise SessionExpiredError(
                 "Breeze needs the account's user id to sign requests; "
                 "re-run the session exchange so it is stored"
             )
-        pair = f"{user_id}:{session_key}".encode("ascii")
-        return base64.b64encode(pair).decode("ascii")
+        return session_key
 
     def _session_key(self) -> str:
         """Identifies whose allowance this call spends.
@@ -259,45 +266,27 @@ class BreezeAdapter(BrokerAdapter):
     # ── account data (scaffold, unverified) ──────────────────────────
 
     async def get_profile(self) -> BrokerProfile:
-        # /customerdetails is the one authenticated-looking endpoint that is
-        # not: Breeze's docs say it takes no headers at all, and expects
-        # SessionToken/AppKey as body fields instead of the signed-header
-        # scheme every other endpoint uses. Sending it through the generic
-        # _request — empty body, checksum headers attached — produces
-        # "Request Object is Null": Breeze parsing an empty body and finding
-        # neither field it actually wanted. exchange_session already got this
-        # right for the initial login; get_profile needs the same shape.
-        if not self.account.session_token_enc:
+        # /customerdetails's SessionToken field takes the raw API_Session
+        # value from the login redirect -- not the session_token that same
+        # call returns, and definitely not the encrypted, already-exchanged
+        # value stored on the account. Confirmed against Breeze's docs after
+        # a real "Invalid session" from a signed, well-formed call: exchanging
+        # is a one-way trip, by their design, so calling /customerdetails a
+        # second time for the same login needs a value this adapter cannot
+        # produce -- the raw API_Session is spent and never persisted (nor
+        # should it be; it is a one-time credential).
+        #
+        # There is nothing to gain by trying anyway: exchange_session already
+        # captured everything this endpoint would return -- broker_client_id
+        # is idirect_userid, stored the moment the exchange succeeded. Once a
+        # session exists, get_profile reports that rather than making a call
+        # that cannot succeed by construction.
+        if not self.account.broker_client_id:
             raise SessionExpiredError("No Breeze session; complete the login flow first")
-        session_key = decrypt_secret(self.account.session_token_enc)
-        # Still counts against the documented per-minute/per-day limits, same
-        # as every other endpoint — the exemption is from the checksum
-        # headers, not from the rate budget.
-        redis = get_redis()
-        limiter_key = self._session_key()
-        await breeze_limiter(redis, session_key=limiter_key).acquire()
-        try:
-            remaining = await breeze_quota(redis, session_key=limiter_key).take()
-        except DailyQuotaExceeded as exc:
-            raise BrokerError(str(exc)) from exc
-        if remaining < 100:
-            logger.warning("breeze_daily_quota_low", remaining=remaining, session=limiter_key)
-        async with httpx.AsyncClient(base_url=API_BASE, timeout=15) as client:
-            resp = await client.request(
-                "GET",
-                "/customerdetails",
-                json={"SessionToken": session_key, "AppKey": self.credentials.api_key},
-            )
-        data = resp.json()
-        if resp.status_code == 401:
-            raise SessionExpiredError("Breeze session rejected (401)")
-        if resp.status_code != 200 or not data.get("Success"):
-            raise BrokerError(f"Breeze error: {data.get('Error', data)}", raw=data)
-        success = data["Success"]
         return BrokerProfile(
-            broker_client_id=str(success.get("idirect_userid", "")),
-            name=success.get("idirect_user_name"),
-            raw=success if isinstance(success, dict) else {},
+            broker_client_id=self.account.broker_client_id,
+            name=None,
+            raw={},
         )
 
     async def get_funds(self) -> Funds:
