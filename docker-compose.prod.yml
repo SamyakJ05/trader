@@ -113,7 +113,10 @@ services:
 
   web:
     build:
-      context: ./apps/web
+      # Repo root: the pnpm workspace root and its lockfile live there, not
+      # under apps/web -- see apps/web/Dockerfile.
+      context: .
+      dockerfile: ./apps/web/Dockerfile
       args:
         # Baked in at build time: Next inlines public env vars, so this cannot
         # be supplied at run time.

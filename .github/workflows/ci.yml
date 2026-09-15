@@ -84,9 +84,10 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/web
+    # The workspace root is the repo root (pnpm-workspace.yaml lives there),
+    # not apps/web -- installing from apps/web still resolves the root
+    # lockfile, so the cache key and --frozen-lockfile check must agree on
+    # that same file or the install fails before any test runs.
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -96,7 +97,7 @@ jobs:
         with:
           node-version: "20"
           cache: pnpm
-          cache-dependency-path: apps/web/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec tsc --noEmit
-      - run: pnpm exec vitest run
+      - run: pnpm --filter web exec tsc --noEmit
+      - run: pnpm --filter web exec vitest run

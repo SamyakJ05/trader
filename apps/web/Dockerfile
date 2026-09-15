@@ -1,15 +1,21 @@
-# Production image for the Next.js app.
+# Production image for the Next.js app. Build context is the REPO ROOT, not
+# apps/web: the pnpm workspace root (and its lockfile, the one npm actually
+# resolves against) lives one level up, and a context scoped to apps/web
+# would only ever see the stale per-package copy.
 FROM node:20-alpine AS deps
 WORKDIR /app
 RUN corepack enable
-COPY package.json pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY apps/web/package.json ./apps/web/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM node:20-alpine AS builder
 WORKDIR /app
 RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
+COPY apps/web ./apps/web
+WORKDIR /app/apps/web
 # The API URL is baked in at build time by Next, so it must be supplied here
 # rather than at run time.
 ARG NEXT_PUBLIC_API_URL

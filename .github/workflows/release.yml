@@ -31,8 +31,12 @@ jobs:
         include:
           - name: api
             context: ./apps/api
+            dockerfile: ./apps/api/Dockerfile
+          # Context is the repo root: the pnpm workspace root and its
+          # lockfile live there, not under apps/web -- see the Dockerfile.
           - name: web
-            context: ./apps/web
+            context: .
+            dockerfile: ./apps/web/Dockerfile
 
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +74,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
