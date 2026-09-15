@@ -298,3 +298,48 @@ async def test_an_exchange_without_a_session_token_is_refused(monkeypatch):
     patch_exchange(monkeypatch, {"Success": {"idirect_userid": "ICICI999"}})
     with pytest.raises(BrokerError, match="session token"):
         await a.exchange_session("api-session")
+
+
+# ── the static IP requirement ────────────────────────────────────────
+# SEBI's algo framework confines the whitelisted-IP rule to the transactional
+# layer. Reads and streaming work from anywhere, which is what lets the
+# playbook's first four stages run from a laptop.
+
+
+async def test_an_order_failure_names_the_static_ip_as_a_suspect(monkeypatch):
+    """A blocked-by-IP rejection arrives as an ordinary broker error.
+    Suspicion naturally falls on the session or the payload first, and hours
+    go into re-checking those."""
+    a = adapter(monkeypatch)
+
+    async def refuse(*args, **kwargs):
+        raise BrokerError("Breeze error: request rejected")
+
+    monkeypatch.setattr(BreezeAdapter, "_request", refuse)
+    with pytest.raises(BrokerError, match="static IP"):
+        await a.place_order(order(), "cli-1")
+
+
+async def test_cancelling_carries_the_same_hint(monkeypatch):
+    a = adapter(monkeypatch)
+
+    async def refuse(*args, **kwargs):
+        raise BrokerError("Breeze error: request rejected")
+
+    monkeypatch.setattr(BreezeAdapter, "_request", refuse)
+    with pytest.raises(BrokerError, match="static IP"):
+        await a.cancel_order("123")
+
+
+async def test_a_read_failure_does_not_blame_the_ip(monkeypatch):
+    """Reads are not IP-restricted, so pointing at the IP here would send
+    someone chasing the wrong cause."""
+    a = adapter(monkeypatch)
+
+    async def refuse(*args, **kwargs):
+        raise BrokerError("Breeze error: session expired")
+
+    monkeypatch.setattr(BreezeAdapter, "_request", refuse)
+    with pytest.raises(BrokerError) as exc:
+        await a.get_funds()
+    assert "static IP" not in str(exc.value)

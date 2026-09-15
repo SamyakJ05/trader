@@ -62,6 +62,24 @@ call.
   free, unlike Kite Connect
 - `APP_ENCRYPTION_KEY` set, so session tokens are encrypted at rest
 
+**The static IP, and what it does not block.** Registration asks for a Primary
+IP Address, whitelisted under SEBI's algo framework (circular of 4 February
+2025, universal from 1 April 2026). The requirement covers the transactional
+layer only — placing, modifying, cancelling and squaring off. Market data, the
+order book, positions and the websocket stream are reachable from any address,
+and the daily browser login can be done anywhere: you copy the `API_Session`
+from your browser and hand it to whichever host holds the registered IP.
+
+So **stages 1 to 4 below run from your laptop today**. Only stage 5, the live
+order, needs to originate from the registered address — typically a small
+always-on VM with a reserved IP (ICICI publish setup guides for AWS, GCP and
+Azure). You get one primary and one secondary IP, changeable about once a week,
+so register something you intend to keep.
+
+If an order is rejected while every read still works, suspect the IP before the
+session or the payload. The adapter says so in that error, because suspicion
+naturally falls on the other two first.
+
 **Put your credentials in `.env` yourself:**
 
 ```bash
@@ -207,6 +225,10 @@ async with async_session_factory() as db:
 **This is the irreversible part.** Everything until now was read-only. This
 spends money, and the exposure is real if the adapter is wrong in a way the
 earlier stages did not reveal.
+
+**This stage must run from the registered static IP.** The earlier ones did
+not. If you have been working from a laptop, this is the point where the
+platform moves to the host whose address you registered.
 
 Do it during market hours, watching your ICICI dashboard at the same time.
 

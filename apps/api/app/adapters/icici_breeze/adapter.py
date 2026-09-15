@@ -366,12 +366,35 @@ class BreezeAdapter(BrokerAdapter):
             body["stoploss"] = str(request.trigger_price)
         return body
 
+    # SEBI's algo framework (circular of 4 Feb 2025, universal from 1 Apr 2026)
+    # requires order requests to originate from an IP the broker has
+    # whitelisted. The requirement is confined to the transactional layer:
+    # placing, modifying, cancelling and squaring off. Market data, the order
+    # book, positions and the websocket stream are reachable from anywhere,
+    # and the daily browser login may be done from any machine — its session
+    # key is then handed to whatever host holds the registered IP.
+    #
+    # Practically: everything but these three methods can be exercised from a
+    # laptop. Only they need the registered host.
+    _STATIC_IP_HINT = (
+        "Orders must originate from the static IP registered with ICICI for "
+        "this app. Reads, market data and the websocket are not restricted, so "
+        "a failure here while everything else works points at the IP rather "
+        "than the session or the payload."
+    )
+
     async def place_order(self, request: OrderRequest, client_order_id: str) -> PlaceOrderResult:
         # TODO(breeze-live-verification): payload follows Breeze's SDK but has
         # never been sent to their API. The live gate keeps this unreachable
         # until an operator verifies it against their own account.
         body = self._order_body(request, client_order_id)
-        data = await self._request("POST", "/order", body)
+        try:
+            data = await self._request("POST", "/order", body)
+        except BrokerError as exc:
+            # A blocked-by-IP rejection arrives as an ordinary broker error.
+            # Saying so here saves hours spent re-checking the session and the
+            # payload, which is where suspicion naturally falls first.
+            raise BrokerError(f"{exc} — {self._STATIC_IP_HINT}") from exc
         broker_order_id = data.get("order_id")
         if not broker_order_id:
             raise BrokerError("Breeze accepted the order without returning an id", raw=data)
@@ -397,7 +420,10 @@ class BreezeAdapter(BrokerAdapter):
         }
         if request.trigger_price is not None:
             body["stoploss"] = str(request.trigger_price)
-        data = await self._request("PUT", "/order", body)
+        try:
+            data = await self._request("PUT", "/order", body)
+        except BrokerError as exc:
+            raise BrokerError(f"{exc} — {self._STATIC_IP_HINT}") from exc
         return PlaceOrderResult(
             broker_order_id=str(broker_order_id),
             status=OrderStatus.OPEN,
@@ -405,11 +431,14 @@ class BreezeAdapter(BrokerAdapter):
         )
 
     async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
-        data = await self._request(
-            "DELETE",
-            "/order",
-            {"order_id": str(broker_order_id), "exchange_code": Exchange.NSE.value},
-        )
+        try:
+            data = await self._request(
+                "DELETE",
+                "/order",
+                {"order_id": str(broker_order_id), "exchange_code": Exchange.NSE.value},
+            )
+        except BrokerError as exc:
+            raise BrokerError(f"{exc} — {self._STATIC_IP_HINT}") from exc
         return PlaceOrderResult(
             broker_order_id=str(broker_order_id),
             status=OrderStatus.CANCELLED,
