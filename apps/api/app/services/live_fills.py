@@ -6,9 +6,14 @@ that — the broker fills them, and we only learn about it from a postback or a
 poll.
 
 Without this, a live fill updates the order row and nothing else. Positions
-would not move, and the realized-P&L counter that MAX_DAILY_LOSS reads would
-stay at zero however much the account lost, silently disabling the one control
-meant to stop a bad day. That is the whole reason this module exists.
+would not move, the cash ledger would never budge, and the realized-P&L
+counter that MAX_DAILY_LOSS reads would stay at zero however much the account
+lost, silently disabling the one control meant to stop a bad day. That is the
+whole reason this module exists.
+
+Everything here runs under the account lock, for the same reason the paper
+engine takes it: booking a fill is a read-modify-write of the position and of
+the ledger's running balance, and broker postbacks arrive concurrently.
 
 Charges are the broker's actual figures where the postback supplies them, and
 our own estimate where it does not — flagged either way, because an estimated
@@ -24,6 +29,7 @@ from app.core.logging import get_logger
 from app.db.models import BrokerAccount, Fill, Order
 from app.domain.calendar import IST
 from app.domain.enums import AuditEventType, Environment, OrderSide, ProductType
+from app.engines.paper import ledger
 from app.engines.paper.charges import compute_charges
 from app.engines.paper.engine import _apply_fill_to_position
 from app.services import audit, daily_pnl
@@ -62,6 +68,15 @@ async def book_fill(
         return None
     if filled_quantity <= 0 or average_price <= 0:
         return None
+
+    # Serialize on the account before reading what is already booked. Brokers
+    # resend postbacks aggressively and report CUMULATIVE quantities, so two
+    # deliveries of the same fill race here: both read the same `booked`, both
+    # compute the same positive delta, and both book it. The dedupe below is a
+    # read-then-write and cannot defend itself without this -- it only narrows
+    # the window. The same lock protects _apply_fill_to_position, which is
+    # itself a read-modify-write of the position row.
+    await ledger.lock_account(db, order.broker_account_id)
 
     booked = await _already_booked(db, order)
     delta = filled_quantity - booked
@@ -104,6 +119,21 @@ async def book_fill(
     await daily_pnl.add_realized(
         redis, order.user_id, order.environment, realized_delta - charges, db
     )
+
+    # Move the cash ledger, exactly as the paper engine does for its own fills.
+    # Without this a live account's ledger never moves: sum(CashLedger.amount)
+    # drifts from the fills table permanently, and nothing detects it, because
+    # the ledger is the only place a balance is derived from. The broker's own
+    # funds figure is a separate snapshot and does not reconcile this.
+    notional = average_price * delta
+    await ledger.append(
+        db,
+        order.broker_account_id,
+        order.side,
+        -notional if order.side == "BUY" else notional,
+        fill_id=fill.id,
+    )
+    await ledger.append(db, order.broker_account_id, "CHARGES", -charges, fill_id=fill.id)
 
     await audit.emit(
         db,

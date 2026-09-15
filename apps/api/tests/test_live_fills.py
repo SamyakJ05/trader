@@ -38,15 +38,38 @@ def order(environment="live", side="BUY", product="CNC"):
 
 
 class FakeDb:
-    """`booked` is the quantity already recorded against this order."""
+    """`booked` is the quantity already recorded against this order.
 
-    def __init__(self, booked=0):
+    Serves two shapes of query, because booking a fill now runs under the
+    account lock: lock_account() does a SELECT ... FOR UPDATE and calls
+    scalar_one(), while the dedupe sums fill quantities via scalars(). A fake
+    that only answered one of them would make the lock look optional.
+    """
+
+    def __init__(self, booked=0, balance=Decimal("100000")):
         self._booked = booked
+        self._balance = balance
         self.added = []
+        self.locked = 0
 
     async def execute(self, *args, **kwargs):
         booked = self._booked
-        return SimpleNamespace(scalars=lambda: iter([booked] if booked else []))
+        self_ = self
+
+        class Result:
+            def scalars(self):
+                return iter([booked] if booked else [])
+
+            def scalar_one(self):
+                # lock_account's SELECT ... FOR UPDATE on the account row.
+                self_.locked += 1
+                return SimpleNamespace(id=uuid.uuid4())
+
+            def scalar_one_or_none(self):
+                # ledger.latest() -- no prior rows in these fixtures.
+                return None
+
+        return Result()
 
     def add(self, obj):
         self.added.append(obj)
@@ -191,3 +214,110 @@ async def test_a_well_formed_payload_books_the_fill(monkeypatch):
         payload={"filled_quantity": 5, "average_price": 2845.5},
     )
     assert fill is not None and fill.quantity == 5
+
+
+# ── the account lock and the cash ledger ─────────────────────────────
+# Both were missing entirely: book_fill updated the position and the
+# daily-P&L counter but never took the lock and never moved cash. The
+# paper engine does both for its own fills. A live account's ledger
+# therefore drifted from its fills permanently, and the dedupe below --
+# a read-then-write -- could not defend itself against the concurrent
+# postbacks brokers are documented to send.
+
+
+async def test_the_lock_is_taken_before_the_dedupe_read(monkeypatch):
+    """Ordering is the whole point, so assert ordering rather than presence.
+
+    ledger.append takes the lock itself, so 'was the lock ever taken' passes
+    even with the explicit lock removed -- it just happens later, after the
+    read-then-write it was supposed to protect. What matters is that the lock
+    precedes the already-booked SELECT: two concurrent postbacks that both
+    read before either locks will both book the same fill.
+    """
+    patch_position(monkeypatch)
+    db = FakeDb()
+    calls: list[str] = []
+
+    real_execute = db.execute
+
+    async def tracking_execute(*args, **kwargs):
+        result = await real_execute(*args, **kwargs)
+
+        class Tracked:
+            def scalars(self_inner):
+                calls.append("read_booked")
+                return result.scalars()
+
+            def scalar_one(self_inner):
+                calls.append("lock")
+                return result.scalar_one()
+
+            def scalar_one_or_none(self_inner):
+                return result.scalar_one_or_none()
+
+        return Tracked()
+
+    db.execute = tracking_execute
+    await live_fills.book_fill(
+        db, redis(), account=account(), order=order(),
+        filled_quantity=5, average_price=Decimal("100"),
+    )
+    assert "lock" in calls and "read_booked" in calls
+    assert calls.index("lock") < calls.index("read_booked"), (
+        f"lock must precede the dedupe read, got {calls}"
+    )
+
+
+async def test_a_live_buy_moves_cash_out_of_the_ledger(monkeypatch):
+    patch_position(monkeypatch)
+    db = FakeDb()
+    await live_fills.book_fill(
+        db, redis(), account=account(), order=order(side="BUY"),
+        filled_quantity=2, average_price=Decimal("100"),
+        charges=Decimal("5"),
+    )
+    # OPENING rows appear too: ledger.append seeds one when an account has no
+    # history, and this fake always reports none. Assert on the entries this
+    # test is about rather than the total count.
+    by_type = {
+        e.entry_type: e.amount
+        for e in db.added
+        if type(e).__name__ == "CashLedger"
+    }
+    assert by_type["BUY"] == Decimal("-200"), "a buy must debit notional"
+    assert by_type["CHARGES"] == Decimal("-5"), "charges always debit"
+
+
+async def test_a_live_sell_credits_the_ledger(monkeypatch):
+    patch_position(monkeypatch)
+    db = FakeDb()
+    await live_fills.book_fill(
+        db, redis(), account=account(), order=order(side="SELL"),
+        filled_quantity=2, average_price=Decimal("100"),
+        charges=Decimal("5"),
+    )
+    by_type = {
+        e.entry_type: e.amount
+        for e in db.added
+        if type(e).__name__ == "CashLedger"
+    }
+    assert by_type["SELL"] == Decimal("200"), "a sell must credit notional"
+    assert by_type["CHARGES"] == Decimal("-5")
+
+
+async def test_only_the_unbooked_delta_moves_cash(monkeypatch):
+    """Postbacks report cumulative quantities. The ledger must move for the
+    new part only, or a resent postback double-charges the account."""
+    patch_position(monkeypatch)
+    db = FakeDb(booked=3)
+    await live_fills.book_fill(
+        db, redis(), account=account(), order=order(side="BUY"),
+        filled_quantity=5, average_price=Decimal("100"),
+        charges=Decimal("1"),
+    )
+    by_type = {
+        e.entry_type: e.amount
+        for e in db.added
+        if type(e).__name__ == "CashLedger"
+    }
+    assert by_type["BUY"] == Decimal("-200"), "only the 2 unbooked shares"
