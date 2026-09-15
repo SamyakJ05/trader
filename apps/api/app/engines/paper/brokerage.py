@@ -15,6 +15,7 @@ class BrokeragePlan:
     """A broker's equity brokerage rule."""
 
     name = "unknown"
+    is_placeholder = False
 
     def charge(self, product: ProductType, turnover: Decimal) -> Decimal:
         raise NotImplementedError
@@ -51,17 +52,40 @@ class ZeroBrokeragePlan(BrokeragePlan):
         return Decimal("0")
 
 
-# Groww and Breeze keep Zerodha-shaped pricing until their adapters are
-# verified and their real plans confirmed. Both advertise similar discount
-# structures, but an unverified number here would quietly misstate cost, so
-# this is a placeholder to replace in their adapter phases, not a claim about
-# what they charge.
+class PlaceholderPlan(ZerodhaPlan):
+    """Zerodha-shaped pricing standing in for a broker whose real plan is not
+    yet encoded.
+
+    Named rather than silent because the difference matters: ICICI Direct is a
+    full-service broker whose percentage-based rates with a per-order floor are
+    nothing like a discount broker's flat cap. Every P&L and backtest on such
+    an account is wrong in the same direction until its real plan lands, and a
+    consistent bias is exactly the kind of error that survives a glance at the
+    numbers.
+    """
+
+    name = "placeholder"
+    is_placeholder = True
+
+
+# Groww and Breeze carry placeholder pricing until their real plans are
+# confirmed. Both advertise structures unlike Zerodha's, so these are markers
+# to replace, not claims about what they charge.
 _PLANS: dict[Broker, BrokeragePlan] = {
     Broker.PAPER: ZeroBrokeragePlan(),
     Broker.ZERODHA: ZerodhaPlan(),
-    Broker.GROWW: ZerodhaPlan(),
-    Broker.ICICI_BREEZE: ZerodhaPlan(),
+    Broker.GROWW: PlaceholderPlan(),
+    Broker.ICICI_BREEZE: PlaceholderPlan(),
 }
+
+
+def is_placeholder(broker: Broker | str) -> bool:
+    """Whether this broker's brokerage is a stand-in rather than its real plan.
+
+    Callers surface this so a cost figure is not read as authoritative when it
+    is a guess shaped like another broker's pricing.
+    """
+    return getattr(get_plan(broker), "is_placeholder", False)
 
 
 def get_plan(broker: Broker | str) -> BrokeragePlan:

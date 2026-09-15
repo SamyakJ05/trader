@@ -228,3 +228,73 @@ def test_the_master_url_is_the_one_carrying_nse_equities():
     from app.adapters.icici_breeze.adapter import SECURITY_MASTER_URL
 
     assert "NewSecurityMaster" in SECURITY_MASTER_URL
+
+
+# ── the session exchange ─────────────────────────────────────────────
+# What a Breeze user has after logging in is an API_Session from the redirect
+# URL, not a session token. The exchange turns one into the other, and is the
+# only place the user id comes from — without which nothing can be signed.
+
+
+class FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+def patch_exchange(monkeypatch, payload, status_code=200):
+    import httpx
+
+    async def fake_request(self, *args, **kwargs):
+        return FakeResponse(payload, status_code)
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+
+async def test_the_exchange_stores_the_session_and_the_user_id(monkeypatch):
+    a = adapter(monkeypatch, session=None, user_id=None)
+    patch_exchange(
+        monkeypatch,
+        {"Success": {"idirect_userid": "ICICI999", "session_token": "real-key"}},
+    )
+    await a.exchange_session("api-session-from-redirect")
+
+    assert a.account.broker_client_id == "ICICI999"
+    assert a.account.session_token_enc, "the real session key must be stored"
+    assert "real-key" not in a.account.session_token_enc, "and stored encrypted"
+
+
+async def test_the_exchange_sets_an_expiry_before_midnight(monkeypatch):
+    """Breeze sessions die at midnight IST or 24 hours from issue, whichever
+    is first, and cannot be refreshed programmatically."""
+    from datetime import datetime, timedelta, timezone
+
+    a = adapter(monkeypatch, session=None, user_id=None)
+    patch_exchange(
+        monkeypatch,
+        {"Success": {"idirect_userid": "ICICI999", "session_token": "real-key"}},
+    )
+    await a.exchange_session("api-session")
+
+    expires = a.account.session_expires_at
+    assert expires is not None
+    assert expires <= datetime.now(timezone.utc) + timedelta(hours=24, minutes=1)
+
+
+async def test_an_exchange_without_a_user_id_is_refused(monkeypatch):
+    """A session we cannot sign with is worse than none: it would look
+    connected and fail every call."""
+    a = adapter(monkeypatch, session=None, user_id=None)
+    patch_exchange(monkeypatch, {"Success": {"session_token": "key"}})
+    with pytest.raises(BrokerError, match="user id"):
+        await a.exchange_session("api-session")
+
+
+async def test_an_exchange_without_a_session_token_is_refused(monkeypatch):
+    a = adapter(monkeypatch, session=None, user_id=None)
+    patch_exchange(monkeypatch, {"Success": {"idirect_userid": "ICICI999"}})
+    with pytest.raises(BrokerError, match="session token"):
+        await a.exchange_session("api-session")

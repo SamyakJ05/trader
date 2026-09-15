@@ -198,6 +198,24 @@ async def set_session_token(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
     if account.broker == Broker.PAPER.value:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Paper needs no token")
+
+    if account.broker == Broker.ICICI_BREEZE.value:
+        # What a Breeze user has in hand is the API_Session from the login
+        # redirect, not a session token. It has to be exchanged for the real
+        # session key, and that exchange is also the only place the user id
+        # comes from — without which no later request can be signed. Storing
+        # the pasted value directly would look like it worked and then fail
+        # every call.
+        adapter = get_adapter(account)
+        try:
+            await adapter.exchange_session(body.token.strip())
+        except BrokerError as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, f"Breeze session exchange failed: {exc}"
+            ) from exc
+        await db.commit()
+        return _account_out(account)
+
     await broker_service.store_session_token(db, account, body.token, body.expires_at)
     return _account_out(account)
 

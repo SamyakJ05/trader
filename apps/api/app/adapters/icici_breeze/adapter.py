@@ -25,7 +25,7 @@ import io
 import json
 import zipfile
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import quote_plus
 
@@ -41,8 +41,17 @@ from app.adapters.icici_breeze.stream import BreezeTickStream
 from app.adapters.throttle import DailyQuotaExceeded, breeze_limiter, breeze_quota
 from app.core.logging import get_logger
 from app.core.redis import get_redis
-from app.core.security import decrypt_secret
-from app.domain.enums import Broker, Exchange, OrderStatus, OrderSide, OrderType, ProductType
+from app.core.security import decrypt_secret, encrypt_secret
+from app.domain.calendar import IST
+from app.domain.enums import (
+    Broker,
+    BrokerAccountStatus,
+    Exchange,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    ProductType,
+)
 from app.domain.models import (
     BrokerOrder,
     BrokerPosition,
@@ -147,8 +156,27 @@ class BreezeAdapter(BrokerAdapter):
         success = data["Success"]
         # Keep the user id: without it no later request can be signed.
         user_id = success.get("idirect_userid")
-        if user_id:
-            self.account.broker_client_id = str(user_id)
+        if not user_id:
+            raise BrokerError(
+                "Breeze returned no user id; requests cannot be signed without it",
+                raw=data,
+            )
+        self.account.broker_client_id = str(user_id)
+
+        session_key = success.get("session_token")
+        if not session_key:
+            raise BrokerError("Breeze returned no session token", raw=data)
+        self.account.session_token_enc = encrypt_secret(str(session_key))
+        # Breeze sessions die at midnight IST or 24 hours from issue, whichever
+        # is first, and cannot be refreshed programmatically.
+        midnight = (datetime.now(IST) + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        self.account.session_expires_at = min(
+            midnight, datetime.now(IST) + timedelta(hours=24)
+        ).astimezone(timezone.utc)
+        self.account.status = BrokerAccountStatus.CONNECTED.value
+        self.account.status_message = None
         return success
 
     async def refresh_session(self) -> dict:

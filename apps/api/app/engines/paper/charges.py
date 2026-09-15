@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from app.domain.enums import Broker, Exchange, OrderSide, ProductType
 from app.engines.paper import rates
-from app.engines.paper.brokerage import get_plan
+from app.engines.paper.brokerage import get_plan, is_placeholder
 
 PAISE = Decimal("0.01")
 
@@ -108,6 +108,12 @@ def compute_charges(
     is_buy = side == OrderSide.BUY
 
     breakdown.brokerage = _round(get_plan(broker).charge(product, turnover))
+    if is_placeholder(broker):
+        breakdown.notes.append(
+            "Brokerage is a placeholder shaped like another broker's plan, not "
+            "this broker's real rates — the total understates or overstates "
+            "cost consistently until the real plan is encoded"
+        )
 
     if is_delivery:
         stt_rate = rateset.stt_delivery_buy if is_buy else rateset.stt_delivery_sell

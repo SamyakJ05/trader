@@ -159,6 +159,23 @@ reviewed act.
 - Strategy state `KILLED` does not auto-release: release the kill switch, then
   explicitly start the strategy again.
 
+## Going live
+
+Two brokers are built out to the same point: everything that can be written
+without credentials is written, and nothing has been run against a real API.
+
+- **[ICICI Breeze](docs/breeze-verification-playbook.md)** — stock codes rather
+  than NSE symbols, no market orders, sessions dying at midnight IST, and every
+  request signed with a checksum over the exact serialized body.
+- **[Zerodha Kite](docs/zerodha-verification-playbook.md)** — bearer-token
+  auth, a binary tick protocol via their SDK, sessions dying at the ~6am
+  exchange flush.
+
+Each playbook ends with one supervised single-share order on a real account,
+because neither broker has a sandbox. The three gates (`ENABLE_LIVE_TRADING`,
+the account's `live_enabled`, the adapter's status) are separate so that flip
+is deliberate, and `tests/test_live_gate.py` fails the moment the third moves.
+
 ## Going live with Zerodha
 
 Every Kite call here was written from Zerodha's documentation and has never

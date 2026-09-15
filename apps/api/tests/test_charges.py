@@ -417,3 +417,40 @@ def test_the_breakdown_names_the_rate_period_it_used():
     ).as_dict()
     assert payload["rates_effective_from"] == "2023-04-01"
     assert "FA56129" in payload["rates_label"]
+
+
+# ── placeholder brokerage is declared, not silent ────────────────────
+
+
+def test_breeze_brokerage_is_flagged_as_a_placeholder():
+    """ICICI Direct is a full-service broker whose percentage rates with a
+    per-order floor are nothing like Zerodha's flat cap. Until its real plan is
+    encoded, every P&L on a Breeze account is wrong in the same direction —
+    and a consistent bias is what survives a glance at the numbers."""
+    from app.engines.paper.brokerage import is_placeholder
+
+    assert is_placeholder(Broker.ICICI_BREEZE)
+    assert not is_placeholder(Broker.ZERODHA)
+    assert not is_placeholder(Broker.PAPER)
+
+
+def test_a_placeholder_says_so_on_the_breakdown():
+    breakdown = compute_charges(
+        broker=Broker.ICICI_BREEZE,
+        side=OrderSide.BUY,
+        product=ProductType.CNC,
+        quantity=100,
+        price=Decimal("1000"),
+    )
+    assert any("placeholder" in note for note in breakdown.notes)
+
+
+def test_a_real_plan_carries_no_placeholder_note():
+    breakdown = compute_charges(
+        broker=Broker.ZERODHA,
+        side=OrderSide.BUY,
+        product=ProductType.CNC,
+        quantity=100,
+        price=Decimal("1000"),
+    )
+    assert not any("placeholder" in note for note in breakdown.notes)
