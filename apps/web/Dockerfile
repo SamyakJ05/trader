@@ -28,17 +28,18 @@ WORKDIR /app
 
 RUN addgroup -g 10001 -S nodejs && adduser -u 10001 -S nextjs -G nodejs
 
-# outputFileTracingRoot is pinned to the workspace root (one level up from
-# apps/web, in next.config.mjs), so standalone's output mirrors that same
-# nesting: server.js lands at .next/standalone/apps/web/server.js, not at
-# the top level. Copy the whole standalone tree, then run from within it.
+# Confirmed by inspecting the built image directly (outputFileTracingRoot's
+# exact nesting behaviour isn't obvious from docs alone): standalone output
+# lands at .next/standalone/web/server.js -- nested one level, by package
+# name, not by its full apps/web path. Copy the whole standalone tree, then
+# run from within that one level of nesting.
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./web/public
 
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000 HOSTNAME=0.0.0.0
-WORKDIR /app/apps/web
+WORKDIR /app/web
 
 CMD ["node", "server.js"]
