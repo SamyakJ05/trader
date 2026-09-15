@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button, ErrorNote, Modal, Pill, inputClass, labelClass } from "../ui";
 import { IconCheck, IconCopy } from "../icons";
 import { useToast } from "../toast";
@@ -440,6 +440,7 @@ export function SessionTokenModal({
   onSubmit,
   error,
   busy,
+  initialToken,
 }: {
   open: boolean;
   broker: string;
@@ -447,8 +448,15 @@ export function SessionTokenModal({
   onSubmit: (token: string) => void;
   error: string | null;
   busy: boolean;
+  /** Pre-fills the field — Breeze's redirect lands with the token already in
+   * the URL, so requiring it be retyped by hand would just be friction. */
+  initialToken?: string;
 }) {
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(initialToken ?? "");
+
+  useEffect(() => {
+    if (open && initialToken) setToken(initialToken);
+  }, [open, initialToken]);
 
   const hint =
     broker === "groww"

@@ -26,6 +26,7 @@ export default function BrokersPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [tokenFor, setTokenFor] = useState<BrokerAccount | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  const [pendingApiSession, setPendingApiSession] = useState<string | null>(null);
 
   // Zerodha callback lands back here with ?connected= or ?error=.
   useEffect(() => {
@@ -35,11 +36,32 @@ export default function BrokersPage() {
     } else if (params.get("error")) {
       push("error", `Broker connection failed: ${params.get("error")}`);
     }
-    if (params.get("connected") || params.get("error")) {
+    // Breeze has no per-path callback — ICICI redirects to whatever bare URL
+    // was registered, which lands at / and forwards here (see app/page.tsx).
+    // Hold the value until accounts have loaded, so it can be matched to the
+    // right one rather than guessed at before the list exists.
+    const apisession = params.get("apisession");
+    if (apisession) setPendingApiSession(apisession);
+    if (params.get("connected") || params.get("error") || apisession) {
       window.history.replaceState(null, "", "/brokers");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!pendingApiSession || !accounts) return;
+    const breeze = accounts.filter((a) => a.broker === "icici_breeze");
+    if (breeze.length === 1) {
+      setTokenError(null);
+      setTokenFor(breeze[0]);
+    } else if (breeze.length === 0) {
+      push("error", "Signed in to ICICI, but no icici_breeze account exists yet — add one, then paste the token manually.");
+    } else {
+      push("info", "Signed in to ICICI — click “Set token” on the right Breeze account to paste it.");
+    }
+    setPendingApiSession((current) => (breeze.length === 1 ? null : current));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingApiSession, accounts]);
 
   async function handleAction(account: BrokerAccount, action: AccountAction) {
     setBusyId(account.id);
@@ -116,6 +138,7 @@ export default function BrokersPage() {
         body: JSON.stringify({ token }),
       });
       setTokenFor(null);
+      setPendingApiSession(null);
       push("success", "Token stored (encrypted). Run “Verify read access” to confirm it works.");
       reload();
     } catch (err) {
@@ -173,10 +196,14 @@ export default function BrokersPage() {
       <SessionTokenModal
         open={tokenFor !== null}
         broker={tokenFor?.broker ?? ""}
-        onClose={() => setTokenFor(null)}
+        onClose={() => {
+          setTokenFor(null);
+          setPendingApiSession(null);
+        }}
         onSubmit={saveToken}
         error={tokenError}
         busy={false}
+        initialToken={tokenFor?.broker === "icici_breeze" ? (pendingApiSession ?? undefined) : undefined}
       />
     </Shell>
   );
