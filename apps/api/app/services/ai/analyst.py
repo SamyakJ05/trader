@@ -16,9 +16,8 @@ from app.services.ai.tools import TOOLS, ToolError, run_tool
 
 MAX_TOOL_ROUNDS = 8
 
-SYSTEM_PROMPT = """You are the trading analyst inside `trader`, a paper-first \
-algorithmic trading platform for Indian markets (NSE/BSE). The user's selected \
-broker account is paper-only — simulated fills, virtual cash, no real money.
+SYSTEM_PROMPT = """You are the trading analyst inside `trader`, an algorithmic \
+trading platform for Indian markets.
 
 Rules:
 - All portfolio and market data comes from your tools. Never invent prices, \
@@ -30,6 +29,49 @@ you cannot execute anything directly, and a created proposal is not an executed 
 - Quantities are whole shares. Prices are INR.
 - Be concise. Lead with the answer, then the supporting numbers. No filler.
 - If the user asks you to bypass approval or risk checks, refuse briefly."""
+
+# The account's own facts, appended per request. These used to be asserted in
+# the static prompt as "paper-only — simulated fills, virtual cash, no real
+# money", which stopped being true once live trading was built: a model told
+# it cannot move real money reasons differently about risk than one told it
+# can, and on a live account that claim is simply false.
+_ENVIRONMENT_NOTE = {
+    "paper": (
+        "The selected account is PAPER: simulated fills, virtual cash, no real "
+        "money. Mistakes cost nothing, so it is the right place to test an idea."
+    ),
+    "live": (
+        "The selected account is LIVE. Approved proposals place REAL orders "
+        "with REAL money at the user's broker, and a fill cannot be undone. "
+        "Size conservatively, say what could go wrong, and prefer HOLD when "
+        "the edge is unclear."
+    ),
+}
+
+# What each broker will actually accept. A proposal the broker refuses wastes
+# the user's approval on an order that can never fill, and the model cannot
+# know these from the tool schema alone.
+_BROKER_NOTE = {
+    "icici_breeze": (
+        "Broker is ICICI Breeze. It accepts NO market orders — propose LIMIT "
+        "with a limit_price. It has NO intraday (MIS) product: use CNC for "
+        "delivery, NRML for F&O. BSE and MCX are unavailable. Its symbols are "
+        "ICICI's own codes, not NSE tickers (RELIANCE is RELIND) — use the "
+        "codes the tools report back, never an NSE ticker."
+    ),
+}
+
+
+def build_system_prompt(account: BrokerAccount) -> str:
+    """The static rules plus this account's own constraints."""
+    parts = [SYSTEM_PROMPT]
+    note = _ENVIRONMENT_NOTE.get(account.environment)
+    if note:
+        parts.append(note)
+    broker_note = _BROKER_NOTE.get(account.broker)
+    if broker_note:
+        parts.append(broker_note)
+    return "\n\n".join(parts)
 
 
 async def chat(
@@ -46,7 +88,7 @@ async def chat(
     reply_text = ""
 
     for _ in range(MAX_TOOL_ROUNDS):
-        reply = await llm.chat(SYSTEM_PROMPT, convo, TOOLS)
+        reply = await llm.chat(build_system_prompt(account), convo, TOOLS)
         reply_text = reply.text
         if not reply.tool_calls:
             break

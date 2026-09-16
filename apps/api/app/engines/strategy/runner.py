@@ -258,6 +258,10 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
                     **strategy.params,
                     "_strategy_id": str(strategy.id),
                     "_user_id": str(strategy.user_id),
+                    # The AI agent tells its model whether mistakes cost real
+                    # money. Without this it always reads "paper" and would
+                    # trade a live account believing fills are simulated.
+                    "_environment": account.environment,
                 },
             )
             try:

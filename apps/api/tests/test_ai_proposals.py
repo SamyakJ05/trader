@@ -74,7 +74,7 @@ class ScriptedLLM:
 
 
 def account_stub():
-    return SimpleNamespace(id=uuid.uuid4(), environment="paper")
+    return SimpleNamespace(id=uuid.uuid4(), environment="paper", broker="paper")
 
 
 async def test_plain_answer_no_tools(monkeypatch):

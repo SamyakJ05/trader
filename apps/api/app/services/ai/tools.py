@@ -19,7 +19,7 @@ from app.db.models import (
     RiskRule,
     Strategy,
 )
-from app.domain.enums import AuditEventType, OrderSide, OrderType, ProductType
+from app.domain.enums import AuditEventType, Broker, OrderSide, OrderType, ProductType
 from app.engines.paper import market_sim
 from app.services import audit, quotes
 
@@ -96,8 +96,16 @@ class ToolError(Exception):
     pass
 
 
-def validate_proposal_args(args: dict) -> dict:
-    """Normalize and validate propose_trade arguments. Raises ToolError."""
+def validate_proposal_args(args: dict, *, broker: str | None = None) -> dict:
+    """Normalize and validate propose_trade arguments. Raises ToolError.
+
+    `broker` narrows the accepted values to what that broker can actually
+    accept. Without it the model was free to propose MARKET/MIS/BSE on a
+    Breeze account, every one of which Breeze refuses -- so an approved
+    proposal became a guaranteed rejection, discovered only after the user
+    had approved a real trade. Refusing here instead lets the model correct
+    itself: the tool error goes back into its context.
+    """
     symbol = str(args.get("symbol", "")).strip().upper()
     if not symbol:
         raise ToolError("symbol is required")
@@ -131,8 +139,29 @@ def validate_proposal_args(args: dict) -> dict:
     if not rationale:
         raise ToolError("rationale is required")
     exchange = str(args.get("exchange", "NSE")).upper()
-    if exchange not in ("NSE", "BSE"):
-        raise ToolError("exchange must be NSE or BSE")
+    if exchange not in ("NSE", "BSE", "NFO"):
+        raise ToolError("exchange must be NSE, BSE or NFO")
+
+    if broker == Broker.ICICI_BREEZE.value:
+        # Each of these is a refusal at the adapter, and the model cannot know
+        # them from the schema alone. Named explicitly so the error tells it
+        # what to do instead rather than only what is wrong.
+        if exchange == "BSE":
+            raise ToolError(
+                "ICICI Breeze does not offer BSE — their API documents BSE and "
+                "MCX as unavailable. Use NSE."
+            )
+        if product == ProductType.MIS.value:
+            raise ToolError(
+                "ICICI Breeze has no MIS (intraday) product. Use CNC for "
+                "delivery or NRML for F&O."
+            )
+        if order_type == OrderType.MARKET.value:
+            raise ToolError(
+                "ICICI Breeze accepts no market orders. Propose a LIMIT order "
+                "with a limit_price, priced to cross the spread if you want it "
+                "to fill immediately."
+            )
     return {
         "symbol": symbol,
         "exchange": exchange,
@@ -271,7 +300,7 @@ async def run_tool(
         )
 
     if name == "propose_trade":
-        fields = validate_proposal_args(args)
+        fields = validate_proposal_args(args, broker=account.broker)
         proposal = AIProposal(user_id=user_id, broker_account_id=account.id, **fields)
         db.add(proposal)
         await db.flush()
