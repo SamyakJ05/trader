@@ -98,3 +98,64 @@ async def broker_session_tick(ctx: dict) -> None:
         except Exception:
             await db.rollback()
             logger.exception("broker_session_tick_failed")
+
+
+async def instrument_sync_tick(ctx: dict) -> None:
+    """Refresh each connected broker's instrument master.
+
+    Nothing in the live path works without this. The master is the only
+    mapping from a trading symbol to the broker's own token: the tick stream
+    subscribes by token, so an empty master means a socket that receives
+    nothing, and strategy creation rejects every symbol as unknown. The
+    service existed and was fully written; it simply had no caller, so on a
+    fresh deployment the table stayed empty forever.
+
+    Breeze regenerates its security master around 08:00 IST and Kite's is
+    refreshed daily; derivative tokens are not stable across days. Running at
+    08:30 IST picks up both after they are published and before the market
+    opens.
+
+    One account per broker is enough -- the master is the broker's, not the
+    account's -- so this syncs the first connected account of each broker
+    rather than repeating a multi-megabyte download per user.
+    """
+    from sqlalchemy import select
+
+    from app.db.models import BrokerAccount
+    from app.domain.enums import BrokerAccountStatus
+    from app.services.instruments import sync_instruments
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(BrokerAccount)
+            .where(BrokerAccount.status == BrokerAccountStatus.CONNECTED.value)
+            .order_by(BrokerAccount.created_at)
+        )
+        accounts = list(result.scalars())
+
+    done: set[str] = set()
+    for account in accounts:
+        if account.broker in done:
+            continue
+        done.add(account.broker)
+        for exchange in ("NSE", "BSE"):
+            # Per exchange and per account: one broker's download failing --
+            # or one exchange being unavailable -- must not cost the others
+            # their sync. A stale master is bad; no master at all is worse.
+            async with async_session_factory() as db:
+                try:
+                    written = await sync_instruments(db, account, exchange=exchange)
+                    await db.commit()
+                    logger.info(
+                        "instrument_sync",
+                        broker=account.broker,
+                        exchange=exchange,
+                        rows=written,
+                    )
+                except Exception:
+                    await db.rollback()
+                    logger.exception(
+                        "instrument_sync_failed",
+                        broker=account.broker,
+                        exchange=exchange,
+                    )

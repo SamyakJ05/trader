@@ -12,6 +12,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import fakeredis.aioredis
+import pytest
 
 from app.domain.enums import Exchange
 from app.domain.models import Tick
@@ -120,21 +121,47 @@ async def test_no_instrument_tokens_means_no_socket(monkeypatch):
 # ── supervision ──────────────────────────────────────────────────────
 
 
-async def test_an_expired_session_stops_retrying(monkeypatch):
-    """Nothing to retry until the user logs in again; looping would hammer the
-    broker for hours."""
+async def test_an_expired_session_waits_and_reconnects_rather_than_dying(monkeypatch):
+    """An expired session is a pause, not the end of the stream.
+
+    This previously asserted the opposite -- that the task returns after one
+    expiry -- on the reasoning that there is nothing to retry until the user
+    logs in again. That much is true, but returning ends the task for good,
+    and the supervisor only starts a task when there isn't one. So after the
+    user re-authenticated the next morning, the feed stayed dead until the
+    whole worker was restarted: a silent daily loss of live prices, and with
+    it every live strategy, since the runner refuses to trade without a fresh
+    quote.
+
+    The concern behind the original -- hammering the broker for hours -- is
+    handled by SESSION_RETRY_DELAY_SECONDS instead, which is what this
+    asserts: it keeps trying, slowly, and picks the session back up.
+    """
     from app.adapters.base import SessionExpiredError
 
     attempts = 0
 
-    async def always_expired(account_id):
+    async def expired_then_cancelled(account_id):
         nonlocal attempts
         attempts += 1
-        raise SessionExpiredError("token dead")
+        if attempts < 3:
+            raise SessionExpiredError("token dead")
+        # Stands in for the user logging back in.
+        raise asyncio.CancelledError
 
-    monkeypatch.setattr(tick_stream, "_run_once", always_expired)
-    await asyncio.wait_for(tick_stream.stream_account(uuid.uuid4()), timeout=2)
-    assert attempts == 1
+    monkeypatch.setattr(tick_stream, "_run_once", expired_then_cancelled)
+    monkeypatch.setattr(tick_stream, "SESSION_RETRY_DELAY_SECONDS", 0)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tick_stream.stream_account(uuid.uuid4()), timeout=2)
+    assert attempts == 3
+
+
+async def test_an_expired_session_backs_off_rather_than_spinning(monkeypatch):
+    """The retry must be slow: nothing can succeed until a human logs in
+    through the broker, so a tight loop would burn database reads for hours
+    to learn the same thing each time."""
+    assert tick_stream.SESSION_RETRY_DELAY_SECONDS >= 60
+    assert tick_stream.SESSION_RETRY_DELAY_SECONDS > tick_stream.RECONNECT_DELAY_SECONDS
 
 
 async def test_a_transient_failure_is_retried(monkeypatch):
@@ -155,6 +182,87 @@ async def test_a_transient_failure_is_retried(monkeypatch):
     except asyncio.CancelledError:
         pass
     assert attempts == 3
+
+
+async def test_a_new_strategy_symbol_reopens_the_feed(monkeypatch):
+    """A feed subscribes once, at the moment it opens.
+
+    Without this check, a strategy created afterwards never receives a price:
+    the socket stays open on the old subscription set, and the runner then
+    refuses to trade the new strategy live because it has no fresh quote. The
+    strategy sits silently dead and nothing says why. Returning drops back
+    into stream_account's loop, which reopens with the current set.
+    """
+    import fakeredis.aioredis as fake_aioredis
+
+    ticks_seen = 0
+
+    class FakeFeed:
+        async def ticks(self):
+            nonlocal ticks_seen
+            for _ in range(50):
+                ticks_seen += 1
+                yield Tick(
+                    symbol="RELIANCE", exchange=Exchange.NSE,
+                    last_price=Decimal("2800"),
+                    ts=__import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc
+                    ),
+                )
+
+        async def stop(self):
+            pass
+
+    calls = {"n": 0}
+
+    class ChangingDb(FakeDb):
+        """Reports an extra symbol only after the feed is already open.
+
+        The first read is the one _run_once subscribes from; every later read
+        is the periodic recheck, which must see the strategy that was added
+        in between.
+        """
+
+        async def execute(self, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return FakeResult([["RELIANCE"]])
+            return FakeResult([["RELIANCE", "INFY"]])
+
+    acct = account()
+    monkeypatch.setattr(
+        tick_stream, "async_session_factory",
+        lambda: ChangingDb(rows=[["RELIANCE"]], account=acct),
+    )
+
+    async def tokens(db, **kwargs):
+        return {"RELIANCE": "2885"}
+
+    monkeypatch.setattr(tick_stream.instrument_service, "token_map", tokens)
+
+    class FakeAdapter:
+        async def tick_feed(self, token_map):
+            return FakeFeed()
+
+    monkeypatch.setattr(tick_stream, "get_adapter", lambda a: FakeAdapter())
+    monkeypatch.setattr(
+        tick_stream, "get_redis",
+        lambda: fake_aioredis.FakeRedis(decode_responses=True),
+    )
+
+    # Candle writing is not what this test is about; the real one needs a
+    # database.
+    async def no_candle(db, tick, source):
+        return None
+
+    monkeypatch.setattr(tick_stream, "record_tick", no_candle)
+    # Force the recheck on the first tick rather than waiting a minute.
+    monkeypatch.setattr(tick_stream, "SYMBOL_RECHECK_SECONDS", 0)
+
+    await tick_stream._run_once(acct.id)
+
+    # It returned early rather than consuming all 50 ticks.
+    assert ticks_seen < 50
 
 
 # ── what a tick writes ───────────────────────────────────────────────

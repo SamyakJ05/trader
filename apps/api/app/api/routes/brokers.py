@@ -19,6 +19,7 @@ from app.domain.capabilities import CAPABILITY_MATRIX
 from app.domain.enums import AuditEventType, Broker, Environment
 from app.services import audit, oauth_state
 from app.services import brokers as broker_service
+from app.services import instruments as instrument_service
 
 logger = get_logger(__name__)
 
@@ -208,6 +209,45 @@ async def verify_read_access(account_id: uuid.UUID, user: VerifiedUser, db: DbSe
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
     return await broker_service.verify_read_access(db, account)
+
+
+class SyncInstrumentsBody(BaseModel):
+    # Breeze publishes a security master per exchange and the codes are its
+    # own (RELIANCE is RELIND), so which exchange is being synced has to be
+    # explicit rather than inferred.
+    exchange: str = Field(default="NSE", max_length=16)
+
+
+@router.post("/accounts/{account_id}/sync-instruments")
+async def sync_instruments_route(
+    account_id: uuid.UUID,
+    body: SyncInstrumentsBody,
+    user: VerifiedUser,
+    db: DbSession,
+):
+    """Download this broker's instrument master.
+
+    The nightly job does this too, but a user who has just connected should
+    not have to wait until 08:30 IST to create a strategy: until the master
+    is populated, every symbol is rejected as unknown and the tick stream has
+    no tokens to subscribe to.
+
+    Deliberately not gated on read_verified_at -- the security master is a
+    public file rather than account data, and needing it BEFORE the first
+    strategy exists is the whole point.
+    """
+    account = await broker_service.get_account(db, user.id, account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
+    try:
+        written = await instrument_service.sync_instruments(
+            db, account, exchange=body.exchange.upper()
+        )
+    except BrokerError as exc:
+        # A failed download is the broker's problem or the network's, not a
+        # bad request: say which, rather than surfacing a 500.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    return {"exchange": body.exchange.upper(), "instruments": written}
 
 
 @router.post("/accounts/{account_id}/disconnect", response_model=AccountOut)

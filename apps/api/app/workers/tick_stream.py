@@ -10,6 +10,7 @@ on one must not take down the others, on the same reasoning as the paper tick.
 """
 
 import asyncio
+import time
 
 from sqlalchemy import select
 
@@ -30,6 +31,16 @@ logger = get_logger(__name__)
 # hammer the broker through an outage, short enough that a transient blip
 # does not cost a session of prices.
 RECONNECT_DELAY_SECONDS = 15
+
+# How long to wait after a session expiry before looking again. Longer than a
+# reconnect: nothing can succeed until a human logs in through the broker, so
+# polling hard would only burn database reads for hours.
+SESSION_RETRY_DELAY_SECONDS = 300
+
+# How often an open feed rechecks which instruments its account's strategies
+# need. A feed subscribes once at open, so without this a strategy added later
+# never receives a price.
+SYMBOL_RECHECK_SECONDS = 60
 
 # Ticks are recorded as candles under this source, which keeps live data and
 # imported history distinguishable — a backtest must be able to say which it
@@ -75,10 +86,20 @@ async def stream_account(account_id) -> None:
         except asyncio.CancelledError:
             raise
         except SessionExpiredError:
-            # Nothing to retry until the user logs in again; the session job
-            # will already have marked the account.
+            # Nothing to retry until the user logs in again, and the session
+            # job will already have marked the account -- but this used to
+            # `return`, ending the task for good. The supervisor only starts a
+            # task when there isn't one, so after the user re-authenticated
+            # the next morning the stream stayed dead until the whole worker
+            # was restarted: a silent, daily loss of the live feed.
+            #
+            # Waiting and looping instead costs one no-op database read per
+            # interval. _run_once returns immediately while the account is not
+            # CONNECTED, so this idles quietly until the session comes back
+            # and then reconnects on its own.
             logger.info("tick_stream_session_expired", broker_account_id=str(account_id))
-            return
+            await asyncio.sleep(SESSION_RETRY_DELAY_SECONDS)
+            continue
         except Exception:
             logger.exception("tick_stream_failed", broker_account_id=str(account_id))
         await asyncio.sleep(RECONNECT_DELAY_SECONDS)
@@ -111,8 +132,34 @@ async def _run_once(account_id) -> None:
         feed = await adapter.tick_feed(token_map)
 
     redis = get_redis()
+    subscribed = set(symbols)
+    next_symbol_check = time.monotonic() + SYMBOL_RECHECK_SECONDS
     try:
         async for tick in feed.ticks():
+            # A feed subscribes once, to the symbols that existed when it
+            # opened. A strategy added afterwards would get no prices until
+            # the worker was restarted -- and the runner refuses to trade
+            # live without a fresh quote, so the new strategy would sit
+            # silently dead. Returning drops back into stream_account's loop,
+            # which reopens the feed with the current set.
+            #
+            # Checked on a timer rather than per tick: this runs on every
+            # tick of every instrument, and a database round trip there would
+            # be its own outage.
+            now = time.monotonic()
+            if now >= next_symbol_check:
+                next_symbol_check = now + SYMBOL_RECHECK_SECONDS
+                async with async_session_factory() as db:
+                    account = await db.get(BrokerAccount, account_id)
+                    current = set(await _symbols_for(db, account)) if account else set()
+                if current != subscribed:
+                    logger.info(
+                        "tick_stream_resubscribing",
+                        broker_account_id=str(account_id),
+                        added=sorted(current - subscribed),
+                        removed=sorted(subscribed - current),
+                    )
+                    return
             # The quote cache first: it is what stops a live order being
             # risk-checked against a price nobody stands behind, and it must
             # not wait on a database write.
