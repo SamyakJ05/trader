@@ -31,6 +31,22 @@ def adapter(monkeypatch, *, env_token="env-token", stored=None):
 
 
 def patch_response(monkeypatch, *, status=200, payload=None, text=None):
+    """Replace the HTTP call, and the throttle that precedes it.
+
+    _request paces against Redis before it sends anything. These tests are
+    about the response envelope, and a real Redis is not part of that -- but
+    the throttle is deliberately NOT bypassed in the adapter itself, so it has
+    to be stubbed here rather than made conditional in production code.
+    """
+    import app.adapters.groww.adapter as groww_module
+
+    class NoThrottle:
+        async def acquire(self, *a, **kw):
+            return None
+
+    monkeypatch.setattr(groww_module, "groww_limiter", lambda *a, **kw: NoThrottle())
+    monkeypatch.setattr(groww_module, "get_redis", lambda: None)
+
     class FakeResponse:
         status_code = status
 
@@ -217,3 +233,51 @@ async def test_missing_cash_reports_zero_rather_than_inventing_headroom(monkeypa
 
     monkeypatch.setattr(GrowwAdapter, "_request", fake)
     assert (await a.get_funds()).available_cash == Decimal("0")
+
+
+# ── rate limiting ────────────────────────────────────────────────────
+
+
+async def test_every_call_is_paced_before_it_is_sent(monkeypatch):
+    """Groww was the one adapter with no rate limiting at all -- not a loose
+    limit, none. The limiter infrastructure existed and was simply never
+    wired in, so a read loop polling positions ran as fast as the event loop
+    allowed.
+
+    This asserts the throttle is acquired BEFORE the request goes out, not
+    merely that a limiter object exists: a limiter acquired afterwards paces
+    nothing.
+    """
+    import app.adapters.groww.adapter as groww_module
+
+    events: list[str] = []
+
+    class RecordingThrottle:
+        async def acquire(self, *a, **kw):
+            events.append("throttle")
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"payload": {}}
+
+    async def fake_send(self, method, url, **kwargs):
+        events.append("request")
+        return FakeResponse()
+
+    monkeypatch.setattr(groww_module, "get_redis", lambda: None)
+    monkeypatch.setattr(
+        groww_module, "groww_limiter", lambda *a, **kw: RecordingThrottle()
+    )
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_send)
+
+    await adapter(monkeypatch)._request("GET", "/holdings/user")
+    assert events == ["throttle", "request"]
+
+
+def test_the_bucket_is_keyed_per_credential_not_per_account(monkeypatch):
+    """Two accounts sharing one set of Groww credentials share whatever
+    budget Groww applies to it; keying per account id would give each its
+    own bucket and together they would exceed the real limit."""
+    assert adapter(monkeypatch)._throttle_key() == "GROWW_MAIN"

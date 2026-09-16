@@ -236,6 +236,34 @@ def breeze_quota(redis: aioredis.Redis, *, session_key: str) -> DailyQuota:
     )
 
 
+# Groww's published limits are NOT recorded here, because they were not
+# verified when this was written and a guessed rate is worse than an honest
+# placeholder: it reads as sourced, and the first person to trust it finds out
+# at the broker.
+#
+# This is deliberately slower than any limit Groww is likely to publish. It
+# costs latency on a read loop and nothing else; being wrong in the other
+# direction risks the app-wide block that Kite's backwards table would have
+# earned. Raise it once the real numbers are read off Groww's docs, and record
+# them the way BREEZE_CALLS_PER_MINUTE does.
+GROWW_ASSUMED_CALLS_PER_SECOND = 2.0
+
+
+def groww_limiter(redis: aioredis.Redis, *, credential_ref: str) -> RateLimiter:
+    """Conservative pacing for Groww, keyed per credential.
+
+    Keyed by credential ref rather than by app: Groww issues a token per user,
+    so two accounts are two budgets. Whether Groww actually meters per user or
+    per app is unverified -- per user is the assumption that under-spends if
+    wrong, rather than the one that over-spends.
+    """
+    return RateLimiter(
+        redis,
+        name=f"groww:{credential_ref}",
+        rate_per_second=GROWW_ASSUMED_CALLS_PER_SECOND,
+    )
+
+
 def kite_limiter(redis: aioredis.Redis, *, api_key: str, category: str) -> RateLimiter:
     """A limiter for one Kite app and endpoint category.
 

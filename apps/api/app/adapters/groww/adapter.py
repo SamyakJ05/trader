@@ -23,7 +23,9 @@ from app.adapters.base import (
     SessionExpiredError,
     as_int,
 )
+from app.adapters.throttle import groww_limiter
 from app.core.logging import get_logger
+from app.core.redis import get_redis
 from app.core.security import decrypt_secret
 from app.domain.enums import Broker, Exchange, OrderSide, OrderStatus, OrderType, ProductType
 from app.domain.models import (
@@ -59,6 +61,14 @@ _STATUS_MAP = {
 
 class GrowwAdapter(BrokerAdapter):
     broker = Broker.GROWW
+
+    def _throttle_key(self) -> str:
+        """The bucket this account's calls are paced against.
+
+        Credential ref rather than account id: two accounts sharing one set of
+        Groww credentials share whatever budget Groww applies to it.
+        """
+        return (self.account.credential_ref or str(self.account.id)).upper()
 
     def _token(self) -> str:
         """The freshest token available, stored session first.
@@ -97,6 +107,14 @@ class GrowwAdapter(BrokerAdapter):
         return {"status": "connected"}
 
     async def _request(self, method: str, path: str, **kwargs) -> dict:
+        # Groww was the one adapter with no rate limiting at all -- not a
+        # loose limit, none: the limiter infrastructure existed and this was
+        # simply never wired to it. A read loop polling positions would have
+        # run as fast as the event loop allowed. The rate is an explicit
+        # assumption rather than a documented figure; see throttle.py.
+        await groww_limiter(
+            get_redis(), credential_ref=self._throttle_key()
+        ).acquire()
         headers = {
             "Authorization": f"Bearer {self._token()}",
             "Accept": "application/json",
