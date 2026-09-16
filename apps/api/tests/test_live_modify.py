@@ -28,6 +28,7 @@ def order(environment="live", status=OrderStatus.OPEN.value, filled=0):
         symbol="RELIANCE", exchange="NSE", side="BUY", order_type="LIMIT",
         product="CNC", validity="DAY", quantity=10, price=Decimal("2800"),
         trigger_price=None, broker_order_id="B-1", client_order_id="cli-1",
+        expiry=None, strike=None, option_right=None,
     )
 
 
@@ -183,3 +184,33 @@ async def test_a_paper_order_does_not_touch_a_broker(monkeypatch):
     )
     assert calls == []
     assert o.price == Decimal("2850")
+
+
+async def test_an_fo_orders_contract_survives_into_the_modify(monkeypatch):
+    """Breeze marks expiry, right and strike mandatory on PUT /order as well
+    as POST. An order that did not remember its contract could be placed and
+    then never amended -- and repricing a resting option is the main reason
+    to amend one.
+    """
+    from datetime import date
+
+    o = order()
+    o.exchange = "NFO"
+    o.product = "NRML"
+    o.expiry = date(2026, 9, 29)
+    o.strike = Decimal("25000")
+    o.option_right = "CALL"
+
+    calls: list = []
+    allow_live(monkeypatch)
+    patch_adapter(monkeypatch, calls=calls)
+
+    await order_service.modify_order(
+        FakeDb(account()), None, user_id=o.user_id, order=o,
+        price=Decimal("250"), quantity=None,
+    )
+
+    _, request = calls[0]
+    assert request.expiry == date(2026, 9, 29)
+    assert request.strike == Decimal("25000")
+    assert request.right.value == "CALL"

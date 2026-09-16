@@ -1,4 +1,4 @@
-"""Let the instrument master hold a derivatives contract.
+"""Let the instrument master and an order hold a derivatives contract.
 
 market_instruments was unique on (broker, exchange, symbol), which cannot
 represent an options chain: Breeze's F&O security master carries 79,612
@@ -32,6 +32,19 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # An order must remember which contract it was for. modify_order rebuilds
+    # an OrderRequest from this row to send to the broker, and Breeze marks
+    # expiry/right/strike mandatory on PUT /order as well as POST -- so
+    # without these an F&O order could be placed and then never amended. The
+    # reconciler likewise cannot say which contract a row refers to.
+    op.execute(
+        """
+        ALTER TABLE orders
+            ADD COLUMN IF NOT EXISTS expiry DATE,
+            ADD COLUMN IF NOT EXISTS strike NUMERIC(18, 4),
+            ADD COLUMN IF NOT EXISTS option_right VARCHAR(8)
+        """
+    )
     op.execute(
         """
         ALTER TABLE market_instruments
@@ -88,6 +101,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        ALTER TABLE orders
+            DROP COLUMN IF EXISTS expiry,
+            DROP COLUMN IF EXISTS strike,
+            DROP COLUMN IF EXISTS option_right
+        """
+    )
     op.execute("DROP INDEX IF EXISTS ix_instruments_chain")
     op.execute("DROP INDEX IF EXISTS uq_instruments_contract")
     # Restoring the old constraint would fail wherever F&O rows have already

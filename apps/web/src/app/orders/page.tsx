@@ -34,6 +34,9 @@ export default function OrdersPage() {
     account: "",
     exchange: "NSE",
     product: "MIS",
+    expiry: "",
+    strike: "",
+    right: "",
   });
 
   // Every account, not only paper. The form was paper-only by construction,
@@ -58,6 +61,9 @@ export default function OrdersPage() {
     : orderTypes[0];
   const effectiveProduct = products.includes(form.product) ? form.product : products[0];
   const needsPrice = effectiveType === "LIMIT";
+  // An F&O order needs its contract: the same underlying has many expiries
+  // and strikes, so a symbol alone does not name what is being traded.
+  const isDerivative = form.exchange === "NFO";
 
   async function placeOrder(e: React.FormEvent) {
     e.preventDefault();
@@ -85,6 +91,13 @@ export default function OrdersPage() {
             product: effectiveProduct,
             quantity: Number(form.quantity),
             price: needsPrice ? form.price : null,
+            ...(isDerivative
+              ? {
+                  expiry: form.expiry || null,
+                  strike: form.strike || null,
+                  right: form.right || "OTHERS",
+                }
+              : {}),
           },
         }),
       });
@@ -186,9 +199,47 @@ export default function OrdersPage() {
               onChange={(e) => setForm({ ...form, exchange: e.target.value })}
             >
               <option>NSE</option>
-              <option>BSE</option>
+              {!noMarketOrders && <option>BSE</option>}
+              <option>NFO</option>
             </select>
           </div>
+          {isDerivative && (
+            <>
+              <div>
+                <label className={labelClass}>Expiry</label>
+                <input
+                  type="date"
+                  className={inputClass}
+                  value={form.expiry}
+                  onChange={(e) => setForm({ ...form, expiry: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Right</label>
+                <select
+                  className={inputClass}
+                  value={form.right}
+                  onChange={(e) => setForm({ ...form, right: e.target.value })}
+                >
+                  <option value="">Future</option>
+                  <option value="CALL">Call</option>
+                  <option value="PUT">Put</option>
+                </select>
+              </div>
+              {form.right && (
+                <div>
+                  <label className={labelClass}>Strike</label>
+                  <input
+                    className={`${inputClass} w-24 num`}
+                    value={form.strike}
+                    onChange={(e) => setForm({ ...form, strike: e.target.value })}
+                    required
+                  />
+                </div>
+              )}
+            </>
+          )}
           {needsPrice && (
             <div>
               <label className={labelClass}>Price</label>

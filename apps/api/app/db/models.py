@@ -239,6 +239,13 @@ class Order(Base):
     average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     status: Mapped[str] = mapped_column(String(20), default="PENDING_RISK")
     status_message: Mapped[str | None] = mapped_column(Text)
+    # Which contract, for a derivatives order. modify_order rebuilds an
+    # OrderRequest from this row, and Breeze requires all three on PUT /order
+    # as well as POST -- so an F&O order that did not remember its contract
+    # could be placed and then never amended.
+    expiry: Mapped[date | None] = mapped_column(Date)
+    strike: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    option_right: Mapped[str | None] = mapped_column(String(8))
     placed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

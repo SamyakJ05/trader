@@ -28,6 +28,7 @@ from app.domain.enums import (
     Broker,
     Environment,
     Exchange,
+    OptionRight,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -192,6 +193,10 @@ async def _place_order_unchecked(
         quantity=request.quantity,
         price=request.price,
         trigger_price=request.trigger_price,
+        # Remembered so modify and reconciliation know which contract this is.
+        expiry=request.expiry,
+        strike=request.strike,
+        option_right=request.right.value if request.right else None,
         status=OrderStatus.PENDING_RISK.value,
     )
     db.add(order)
@@ -356,6 +361,12 @@ async def modify_order(
             price=new_price,
             trigger_price=order.trigger_price,
             validity=Validity(order.validity),
+            # Carried from the stored row: Breeze marks these mandatory on
+            # PUT /order too, so an amend that dropped them would be rejected
+            # for an F&O order.
+            expiry=order.expiry,
+            strike=order.strike,
+            right=OptionRight(order.option_right) if order.option_right else None,
         )
         adapter = get_trading_adapter(account)
         try:

@@ -48,11 +48,15 @@ export function CreateStrategyModal({
     order_type: "",
     product: "",
     limit_buffer_pct: "",
+    expiry: "",
+    strike: "",
+    right: "",
   });
 
   const accountId = form.account || accounts[0]?.id || "";
   const selected = accounts.find((a) => a.id === accountId);
   const isBreeze = selected?.broker === "icici_breeze";
+  const isDerivative = form.exchange === "NFO";
   const isLive = selected?.environment === "live";
 
   // Mirrors the backend's own defaults so the form does not imply a choice
@@ -83,6 +87,12 @@ export function CreateStrategyModal({
     if (form.order_type) params.order_type = form.order_type;
     if (form.product) params.product = form.product;
     if (form.limit_buffer_pct) params.limit_buffer_pct = form.limit_buffer_pct;
+    // A symbol alone does not name an F&O contract — Breeze lists 3,350 NIFTY
+    // contracts under that one code — so an NFO strategy must carry an expiry
+    // or every order it places is refused.
+    if (form.expiry) params.expiry = form.expiry;
+    if (form.strike) params.strike = form.strike;
+    if (form.right) params.right = form.right;
 
     setBusy(true);
     try {
@@ -175,7 +185,11 @@ export function CreateStrategyModal({
               onChange={(e) => setForm({ ...form, exchange: e.target.value })}
             >
               <option>NSE</option>
-              <option>BSE</option>
+              {/* Breeze's own docs: BSE and MCX are not available on the
+                  Breeze API, so offering BSE there is a segment every order
+                  would be rejected on. */}
+              {!isBreeze && <option>BSE</option>}
+              <option>NFO</option>
             </select>
           </div>
           <div>
@@ -209,6 +223,52 @@ export function CreateStrategyModal({
             />
           </div>
         </div>
+
+        {isDerivative && (
+          <div className="rounded border border-line bg-panel-2 px-3 py-2">
+            <p className={labelClass}>Contract</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className={labelClass}>Expiry</label>
+                <input
+                  type="date"
+                  className={inputClass}
+                  value={form.expiry}
+                  onChange={(e) => setForm({ ...form, expiry: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <label className={labelClass}>Right</label>
+                <select
+                  className={inputClass}
+                  value={form.right}
+                  onChange={(e) => setForm({ ...form, right: e.target.value })}
+                >
+                  <option value="">Future</option>
+                  <option value="call">Call</option>
+                  <option value="put">Put</option>
+                </select>
+              </div>
+              <div>
+                <label className={labelClass}>Strike</label>
+                <input
+                  className={`${inputClass} num`}
+                  value={form.strike}
+                  onChange={(e) => setForm({ ...form, strike: e.target.value })}
+                  placeholder={form.right ? "25000" : "—"}
+                  disabled={!form.right}
+                  required={!!form.right}
+                />
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-ink-faint">
+              A symbol alone does not name a contract: the same underlying has
+              many expiries and strikes. Leave the right as Future for a
+              futures contract, which needs no strike.
+            </p>
+          </div>
+        )}
 
         <details className="rounded border border-line bg-panel-2 px-3 py-2">
           <summary className="cursor-pointer text-xs uppercase tracking-wider text-ink-faint">
