@@ -13,7 +13,7 @@ from app.engines.paper import engine as paper_engine
 from app.engines.paper import market_sim
 from app.engines.paper.settlement import settle_due
 from app.engines.strategy import runner
-from app.services import heartbeat
+from app.services import heartbeat, order_reconcile
 from app.services.sessions_broker import expire_stale_sessions
 
 logger = get_logger(__name__)
@@ -159,3 +159,27 @@ async def instrument_sync_tick(ctx: dict) -> None:
                         broker=account.broker,
                         exchange=exchange,
                     )
+
+
+async def order_reconcile_tick(ctx: dict) -> None:
+    """Ask polled brokers what happened to our open live orders.
+
+    Breeze does not push order state -- its capability matrix says so and it
+    is accurate -- so without this a live order that filled updated nothing:
+    no Fill row, no position, no cash movement, and no realized-P&L, which is
+    what MAX_DAILY_LOSS reads. An account could lose any amount and the limit
+    would never fire.
+
+    Every 30s during the trading day. Frequent enough that a strategy acting
+    on its own position size is not working from hours-old information, and
+    cheap enough against Breeze's 100/min budget: one call per connected live
+    account per cycle, only when that account has open orders.
+    """
+    redis = get_redis()
+    try:
+        changed = await order_reconcile.reconcile_all(async_session_factory, redis)
+    except Exception:
+        logger.exception("order_reconcile_tick_failed")
+        return
+    if changed:
+        logger.info("order_reconcile_tick", orders=changed)

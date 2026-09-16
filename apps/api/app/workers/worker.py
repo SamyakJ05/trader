@@ -12,6 +12,7 @@ from app.workers import tick_stream
 from app.workers.jobs import (
     broker_session_tick,
     instrument_sync_tick,
+    order_reconcile_tick,
     paper_tick,
     strategy_tick,
 )
@@ -71,6 +72,13 @@ class WorkerSettings:
         # deployment would have an empty table until the next morning, and
         # every symbol would be rejected as unknown in the meantime.
         cron(instrument_sync_tick, hour={3}, minute={0}, run_at_startup=True),
+        # Breeze pushes no order state, so a live fill is only ever learned
+        # by asking. Without this a filled order books no Fill, moves no
+        # position and never reaches the realized-P&L counter MAX_DAILY_LOSS
+        # reads -- the account could lose any amount and the limit would not
+        # fire. Twice a minute: current enough for a strategy sizing off its
+        # own position, cheap against Breeze's 100/min budget.
+        cron(order_reconcile_tick, second={0, 30}),
     ]
     on_startup = startup
     on_shutdown = shutdown
