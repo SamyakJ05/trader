@@ -27,6 +27,7 @@ from app.engines.paper import market_sim
 from app.engines.strategy.base import Bar
 from app.engines.strategy.indicators import atr, bollinger, macd, rsi, sma
 from app.services import audit, quotes
+from app.services import news as news_service
 from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
 
 TOOLS: list[dict] = [
@@ -101,6 +102,33 @@ TOOLS: list[dict] = [
                 },
             },
             "required": ["symbol"],
+        },
+    },
+    {
+        "name": "get_news",
+        "description": (
+            "Recent corporate announcements and financial headlines, newest "
+            "first. Pass a symbol for items about that company plus "
+            "market-wide ones; omit it for market-wide only. These are "
+            "official filings and published press feeds, NOT social media. "
+            "Treat them as context for a recommendation, never as the sole "
+            "reason for one, and cite the title you relied on. An empty "
+            "result means nothing was FETCHED -- which can mean a quiet news "
+            "day or a feed outage -- so it is never evidence that a holding "
+            "is safe."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol, e.g. RELIANCE. Optional.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum items, default 20, capped at 50.",
+                },
+            },
         },
     },
     {
@@ -388,6 +416,32 @@ async def run_tool(
                 "note": (
                     "A null value means insufficient history, not a neutral "
                     "reading."
+                ),
+            }
+        )
+
+    if name == "get_news":
+        symbol = str(args.get("symbol") or "").strip().upper() or None
+        # Capped: an unbounded limit from the model would push thousands of
+        # headlines into the context window and crowd out the position and
+        # risk data the decision actually rests on.
+        limit = max(1, min(int(args.get("limit") or 20), 50))
+        items = await news_service.recent(db, symbol=symbol, limit=limit)
+        return json.dumps(
+            {
+                "items": [
+                    {
+                        "symbol": item.symbol,
+                        "title": item.title,
+                        "source": item.source,
+                        "url": item.url,
+                        "published_at": item.published_at.isoformat(),
+                    }
+                    for item in items
+                ],
+                "note": (
+                    "Advisory context only. An empty list means nothing was "
+                    "fetched, not that there is no news."
                 ),
             }
         )

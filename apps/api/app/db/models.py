@@ -534,6 +534,44 @@ class PendingSettlement(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class NewsItem(Base):
+    """A corporate announcement or headline, for the analyst to read.
+
+    Advisory only. Nothing here reaches a strategy or an order: an external
+    feed is the one input an attacker can write to, and a feed that goes quiet
+    is indistinguishable from a market with no news. Neither may move money on
+    its own, so this informs proposals a human approves.
+
+    url is unique: every source republishes, and the same filing arriving
+    twice must not read as two events -- "three announcements today" is a
+    signal an analyst would weigh.
+    """
+
+    __tablename__ = "news_items"
+    __table_args__ = (
+        UniqueConstraint("url", name="uq_news_url"),
+        Index("ix_news_published", "published_at"),
+        # The analyst asks "what is there about RELIANCE", so the lookup is
+        # by symbol and recency together.
+        Index("ix_news_symbol_published", "symbol", "published_at"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    # Which feed it came from, so a misbehaving source can be identified and
+    # its items discounted without dropping the table.
+    source: Mapped[str] = mapped_column(String(32))
+    # NULL when the item is market-wide rather than about one company. The
+    # analyst reads those as context, not as a reason to trade a symbol.
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
 class Candle(Base):
     __tablename__ = "candles"
     __table_args__ = (UniqueConstraint("symbol", "exchange", "interval", "source", "ts"),)

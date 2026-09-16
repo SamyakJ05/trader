@@ -13,6 +13,7 @@ from app.workers.jobs import (
     broker_session_tick,
     import_history_job,
     instrument_sync_tick,
+    news_refresh_tick,
     order_reconcile_tick,
     paper_tick,
     strategy_tick,
@@ -83,6 +84,11 @@ class WorkerSettings:
         # fire. Twice a minute: current enough for a strategy sizing off its
         # own position, cheap against Breeze's 100/min budget.
         cron(order_reconcile_tick, second={0, 30}),
+        # Every 15 minutes. News is advisory context for a human-approved
+        # proposal, not a trading input, so minute-level freshness buys
+        # nothing and would only add load against publishers whose feeds
+        # update far more slowly than that.
+        cron(news_refresh_tick, minute={0, 15, 30, 45}),
     ]
     on_startup = startup
     on_shutdown = shutdown

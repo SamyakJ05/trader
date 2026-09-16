@@ -14,7 +14,7 @@ from app.engines.paper import engine as paper_engine
 from app.engines.paper import market_sim
 from app.engines.paper.settlement import settle_due
 from app.engines.strategy import runner
-from app.services import heartbeat, order_reconcile
+from app.services import heartbeat, news, order_reconcile
 from app.services.sessions_broker import expire_stale_sessions
 
 logger = get_logger(__name__)
@@ -248,3 +248,21 @@ async def import_history_job(
                 # usually actionable ("no data found for this date range").
                 failed.append({"symbol": symbol, "error": str(exc)[:300]})
     return {"imported": imported, "failed": failed}
+
+
+async def news_refresh_tick(ctx: dict) -> None:
+    """Pull corporate announcements and financial headlines.
+
+    Advisory only: the sole reader is the AI analyst's get_news tool, and the
+    analyst's output is a proposal a human approves. Nothing here reaches a
+    strategy or the order pipeline.
+
+    Never raises. News is context, not a dependency -- a publisher being down
+    must not mark the worker unhealthy or interrupt the ticks that do move
+    money.
+    """
+    try:
+        async with async_session_factory() as db:
+            await news.refresh(db)
+    except Exception as e:  # Advisory feed: logged, never escalated.
+        logger.warning("news_refresh_failed", error=str(e))
