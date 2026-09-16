@@ -52,6 +52,18 @@ def upgrade() -> None:
             ADD COLUMN IF NOT EXISTS option_right VARCHAR(8)
         """
     )
+    # A proposal is approved into an order, so it has to carry the contract
+    # too -- otherwise the analyst can describe an option trade and the
+    # approval would place it as a cash order in the underlying, which is a
+    # different position entirely.
+    op.execute(
+        """
+        ALTER TABLE ai_proposals
+            ADD COLUMN IF NOT EXISTS expiry DATE,
+            ADD COLUMN IF NOT EXISTS strike NUMERIC(18, 4),
+            ADD COLUMN IF NOT EXISTS option_right VARCHAR(8)
+        """
+    )
     # The old constraint's name is whatever Postgres generated for the
     # UniqueConstraint in 0001; drop by lookup rather than by guessed name.
     op.execute(
@@ -101,6 +113,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        ALTER TABLE ai_proposals
+            DROP COLUMN IF EXISTS expiry,
+            DROP COLUMN IF EXISTS strike,
+            DROP COLUMN IF EXISTS option_right
+        """
+    )
     op.execute(
         """
         ALTER TABLE orders

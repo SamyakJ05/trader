@@ -19,6 +19,7 @@ from app.domain.enums import (
     AIProposalStatus,
     AuditEventType,
     Exchange,
+    OptionRight,
     OrderSide,
     OrderType,
     ProductType,
@@ -285,6 +286,12 @@ async def approve_proposal(proposal_id: uuid.UUID, user: VerifiedUser, db: DbSes
         order_type=OrderType(p.order_type),
         product=ProductType(p.product),
         limit_price=p.limit_price,
+        # The contract, for a derivatives proposal. Dropping these would
+        # place a cash order in the underlying rather than the option the
+        # analyst described and the user approved.
+        expiry=p.expiry,
+        strike=p.strike,
+        right=OptionRight(p.option_right) if p.option_right else None,
     )
     exchange = Exchange(p.exchange)
     try:

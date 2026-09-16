@@ -4,6 +4,7 @@ Nothing here talks to a broker or places an order."""
 
 import json
 import uuid
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 import redis.asyncio as aioredis
@@ -41,7 +42,11 @@ TOOLS: list[dict] = [
     },
     {
         "name": "get_quotes",
-        "description": "Current simulated prices and recent history for one or more symbols.",
+        "description": (
+            "Current prices and recent history for one or more symbols. On a "
+            "live account these are real market quotes, and a symbol with no "
+            "recent quote reports none rather than an estimate."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -75,7 +80,12 @@ TOOLS: list[dict] = [
             "type": "object",
             "properties": {
                 "symbol": {"type": "string"},
-                "exchange": {"type": "string", "enum": ["NSE", "BSE"], "default": "NSE"},
+                "exchange": {
+                    "type": "string",
+                    "enum": ["NSE", "BSE", "NFO"],
+                    "default": "NSE",
+                    "description": "NFO for futures and options.",
+                },
                 "side": {"type": "string", "enum": ["BUY", "SELL"]},
                 "quantity": {"type": "integer", "minimum": 1},
                 "order_type": {"type": "string", "enum": ["MARKET", "LIMIT"], "default": "MARKET"},
@@ -84,6 +94,23 @@ TOOLS: list[dict] = [
                 "rationale": {
                     "type": "string",
                     "description": "Short explanation the user will read before approving",
+                },
+                "expiry": {
+                    "type": "string",
+                    "description": (
+                        "Contract expiry as YYYY-MM-DD. Required for NFO: a "
+                        "symbol alone does not name a contract, since the same "
+                        "underlying has many expiries and strikes."
+                    ),
+                },
+                "strike": {
+                    "type": "number",
+                    "description": "Option strike. Omit for a futures contract.",
+                },
+                "right": {
+                    "type": "string",
+                    "enum": ["call", "put", "others"],
+                    "description": "'others' for a future.",
                 },
             },
             "required": ["symbol", "side", "quantity", "rationale"],
@@ -142,6 +169,35 @@ def validate_proposal_args(args: dict, *, broker: str | None = None) -> dict:
     if exchange not in ("NSE", "BSE", "NFO"):
         raise ToolError("exchange must be NSE, BSE or NFO")
 
+    # A derivatives proposal has to name its contract. Without this the
+    # approval would place a cash order in the underlying instead -- a
+    # different position, at a different price, with different margin.
+    expiry = strike = option_right = None
+    if exchange == "NFO":
+        raw_expiry = str(args.get("expiry", "")).strip()
+        if not raw_expiry:
+            raise ToolError(
+                "expiry is required for NFO (YYYY-MM-DD): a symbol alone does "
+                "not name a contract."
+            )
+        try:
+            expiry = date.fromisoformat(raw_expiry)
+        except ValueError:
+            raise ToolError(f"expiry must be YYYY-MM-DD, got {raw_expiry!r}") from None
+        raw_right = str(args.get("right", "")).strip().lower()
+        if args.get("strike") is not None:
+            try:
+                strike = Decimal(str(args["strike"]))
+            except InvalidOperation:
+                raise ToolError("strike must be a number") from None
+            if not raw_right:
+                raise ToolError("right is required with a strike: call or put")
+        if raw_right and raw_right not in ("call", "put", "others"):
+            raise ToolError(f"right must be call, put or others, got {raw_right!r}")
+        if raw_right in ("call", "put") and strike is None:
+            raise ToolError("an option needs a strike")
+        option_right = (raw_right or "others").upper()
+
     if broker == Broker.ICICI_BREEZE.value:
         # Each of these is a refusal at the adapter, and the model cannot know
         # them from the schema alone. Named explicitly so the error tells it
@@ -171,6 +227,9 @@ def validate_proposal_args(args: dict, *, broker: str | None = None) -> dict:
         "product": product,
         "limit_price": limit_price,
         "rationale": rationale,
+        "expiry": expiry,
+        "strike": strike,
+        "option_right": option_right,
     }
 
 

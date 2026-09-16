@@ -445,6 +445,11 @@ class AIProposal(Base):
     product: Mapped[str] = mapped_column(String(8), default="MIS")
     quantity: Mapped[int] = mapped_column(Integer)
     limit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    # Contract, for a derivatives proposal. Without these an approved option
+    # proposal would place a cash order in the underlying instead.
+    expiry: Mapped[date | None] = mapped_column(Date)
+    strike: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    option_right: Mapped[str | None] = mapped_column(String(8))
     rationale: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="PROPOSED", index=True)
     order_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("orders.id", ondelete="SET NULL"))

@@ -224,3 +224,54 @@ def test_an_unknown_broker_still_gets_usable_rules():
 
     prompt = build_system_prompt(None, None)
     assert "NSE" in prompt
+
+
+# ── F&O proposals ────────────────────────────────────────────────────
+
+
+def fo(**kw):
+    base = dict(symbol="NIFTY", exchange="NFO", side="BUY", quantity=65,
+                rationale="because", order_type="LIMIT", limit_price=245,
+                product="NRML", expiry="2026-09-29", strike=25000, right="call")
+    base.update(kw)
+    return {k: v for k, v in base.items() if v is not None}
+
+
+def test_an_option_proposal_carries_its_contract():
+    """Without these the approval places a cash order in the underlying -- a
+    different position, at a different price, with different margin, from the
+    one the analyst described and the user approved."""
+    from datetime import date
+
+    fields = validate_proposal_args(fo(), broker="icici_breeze")
+    assert fields["expiry"] == date(2026, 9, 29)
+    assert fields["strike"] == Decimal("25000")
+    assert fields["option_right"] == "CALL"
+
+
+def test_a_futures_proposal_needs_no_strike():
+    fields = validate_proposal_args(
+        fo(strike=None, right=None), broker="icici_breeze"
+    )
+    assert fields["strike"] is None
+    assert fields["option_right"] == "OTHERS"
+
+
+@pytest.mark.parametrize("args,expected", [
+    (fo(expiry=None), "expiry is required"),
+    (fo(strike=None), "strike"),
+    (fo(expiry="29-Sep-2026"), "YYYY-MM-DD"),
+    (fo(right="maybe"), "call, put or others"),
+])
+def test_an_incoherent_contract_is_refused(args, expected):
+    """Refused at the tool so the error reaches the model's context, rather
+    than becoming a broker rejection after a human approved it."""
+    with pytest.raises(ToolError, match=expected):
+        validate_proposal_args(args, broker="icici_breeze")
+
+
+def test_a_cash_proposal_carries_no_contract():
+    fields = validate_proposal_args(valid(), broker="icici_breeze")
+    assert fields["expiry"] is None
+    assert fields["strike"] is None
+    assert fields["option_right"] is None
