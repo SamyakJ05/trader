@@ -174,6 +174,10 @@ export interface RiskRule {
   // What the limit means, in words. A rule name and a params blob is not a
   // sentence anyone reads under pressure.
   description: string;
+  // The one params key a user may edit, and its unit. Reported by the API so
+  // the key cannot drift from the one the risk engine reads.
+  editable_field: string | null;
+  unit: string | null;
 }
 
 export interface AuditEvent {

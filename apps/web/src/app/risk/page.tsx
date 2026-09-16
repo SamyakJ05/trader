@@ -1,7 +1,18 @@
 "use client";
 
+import { useState } from "react";
 import Shell from "@/components/Shell";
-import { Button, Card, EmptyState, PageHeader, Pill, Skeleton, Td, Th } from "@/components/ui";
+import {
+  Button,
+  Card,
+  EmptyState,
+  PageHeader,
+  Pill,
+  Skeleton,
+  Td,
+  Th,
+  inputClass,
+} from "@/components/ui";
 import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -32,6 +43,37 @@ export default function RiskPage() {
       reloadKill();
     } catch (err) {
       push("error", err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  // The limit's value, edited as a single number. Raw JSON would let a typo
+  // in a key name silently remove a limit rather than change it — on rules
+  // that gate real money.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  async function saveLimit(rule: RiskRule) {
+    if (!rule.editable_field) return;
+    const value = Number(draft);
+    if (!Number.isFinite(value) || value <= 0) {
+      push("error", "Enter a number greater than zero");
+      return;
+    }
+    try {
+      await api(`/risk/rules/${rule.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          rule_type: rule.rule_type,
+          environment: rule.environment,
+          params: { ...rule.params, [rule.editable_field]: value },
+          enabled: rule.enabled,
+        }),
+      });
+      push("success", "Limit updated");
+      setEditing(null);
+      reloadRules();
+    } catch (err) {
+      push("error", err instanceof Error ? err.message : "Could not update the limit");
     }
   }
 
@@ -120,9 +162,45 @@ export default function RiskPage() {
                         </span>
                       </Td>
                       <Td>
-                        <Button size="sm" onClick={() => toggleRule(r)}>
-                          {r.enabled ? "Disable" : "Enable"}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          {editing === r.id ? (
+                            <>
+                              <input
+                                autoFocus
+                                className={`${inputClass} num w-28`}
+                                value={draft}
+                                onChange={(e) => setDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") saveLimit(r);
+                                  if (e.key === "Escape") setEditing(null);
+                                }}
+                              />
+                              <Button size="sm" variant="primary" onClick={() => saveLimit(r)}>
+                                Save
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+                                Cancel
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              {r.editable_field && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setEditing(r.id);
+                                    setDraft(String(r.params[r.editable_field!] ?? ""));
+                                  }}
+                                >
+                                  Edit limit
+                                </Button>
+                              )}
+                              <Button size="sm" onClick={() => toggleRule(r)}>
+                                {r.enabled ? "Disable" : "Enable"}
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       </Td>
                     </tr>
                   ))}

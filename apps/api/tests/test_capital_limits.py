@@ -193,3 +193,53 @@ async def test_provisioning_covers_both_environments():
     environments = {r.environment for r in db.added}
     assert environments == {"paper", "live"}
     assert created == len(db.added)
+
+
+# ── editing a limit from the UI ──────────────────────────────────────
+
+
+def test_every_default_rule_reports_which_field_is_editable():
+    """The UI offers one number per rule rather than raw JSON. A rule whose
+    editable field is unknown would be uneditable, leaving the operator to
+    hand-write a params dict for a limit that gates real money."""
+    from app.services.risk_defaults import DEFAULT_RULES, editable_field
+
+    for rule_type, params in DEFAULT_RULES:
+        field = editable_field(rule_type)
+        if not params:
+            # MARKET_HOURS takes no parameter: on or off.
+            assert field is None, f"{rule_type} has no params but claims a field"
+            continue
+        assert field is not None, f"{rule_type} has params but no editable field"
+        key, unit = field
+        assert key in params, (
+            f"{rule_type} reports editable key {key!r}, which is not in its own "
+            f"defaults {sorted(params)} -- editing it would write a key the "
+            "engine never reads"
+        )
+        assert unit
+
+
+def test_the_editable_key_is_the_one_the_engine_reads():
+    """A mismatch here is the dangerous kind: writing max_exposure_limit
+    instead of max_exposure leaves the rule enabled, reading its default, and
+    silently ignoring what the operator set."""
+    import inspect
+
+    from app.engines.risk import engine as risk_engine
+    from app.services.risk_defaults import editable_field
+
+    source = inspect.getsource(risk_engine.RiskEngine._check_rule)
+    for rule_type in (
+        RiskRuleType.MAX_TOTAL_EXPOSURE,
+        RiskRuleType.MAX_DAILY_TURNOVER,
+        RiskRuleType.MAX_ORDER_NOTIONAL,
+        RiskRuleType.MAX_DAILY_LOSS,
+        RiskRuleType.MAX_POSITION_SIZE,
+        RiskRuleType.MAX_OPEN_POSITIONS,
+    ):
+        key, _ = editable_field(rule_type)
+        assert f'"{key}"' in source or f"'{key}'" in source, (
+            f"{rule_type} reports editable key {key!r}, which the risk engine "
+            "does not read"
+        )

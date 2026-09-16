@@ -61,6 +61,30 @@ async def provision(db: AsyncSession, user_id) -> int:
     return created
 
 
+# Which params key each rule's limit lives under, and what it measures. The
+# UI needs this to offer a single editable number rather than raw JSON -- a
+# limit that gates real money should not be edited by hand-writing a dict,
+# where a typo in a key name silently removes the limit rather than changing
+# it.
+#
+# Declared here, beside describe(), so the key and its wording cannot drift.
+EDITABLE_FIELD: dict[RiskRuleType, tuple[str, str]] = {
+    RiskRuleType.MAX_TOTAL_EXPOSURE: ("max_exposure", "rupees"),
+    RiskRuleType.MAX_DAILY_TURNOVER: ("max_turnover", "rupees"),
+    RiskRuleType.MAX_ORDER_NOTIONAL: ("max_notional", "rupees"),
+    RiskRuleType.MAX_DAILY_LOSS: ("max_loss", "rupees"),
+    RiskRuleType.MAX_POSITION_SIZE: ("max_quantity", "shares"),
+    RiskRuleType.MAX_OPEN_POSITIONS: ("max_positions", "positions"),
+    RiskRuleType.DUPLICATE_ORDER_COOLDOWN: ("seconds", "seconds"),
+    # MARKET_HOURS takes no parameter: it is on or off.
+}
+
+
+def editable_field(rule_type: RiskRuleType) -> tuple[str, str] | None:
+    """The single params key a user may edit, and its unit, or None."""
+    return EDITABLE_FIELD.get(rule_type)
+
+
 def describe(rule_type: RiskRuleType, params: dict) -> str:
     """A one-line summary for the UI, in the units the rule actually uses."""
     if rule_type == RiskRuleType.MAX_TOTAL_EXPOSURE:

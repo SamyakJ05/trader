@@ -26,6 +26,8 @@ class RuleOut(BaseModel):
     params: dict
     enabled: bool
     description: str = ""
+    editable_field: str | None = None
+    unit: str | None = None
 
 
 def _out(r: RiskRule) -> RuleOut:
@@ -39,6 +41,13 @@ def _out(r: RiskRule) -> RuleOut:
         # limit actually does. "MAX_TOTAL_EXPOSURE {"max_exposure": 100000}"
         # is not a sentence anyone reads under pressure.
         description=risk_defaults.describe(RiskRuleType(r.rule_type), r.params or {}),
+        # Which single number the UI may edit, and its unit. Reported rather
+        # than duplicated in the frontend so the key cannot drift from the one
+        # the engine actually reads.
+        editable_field=(
+            risk_defaults.editable_field(RiskRuleType(r.rule_type)) or (None, None)
+        )[0],
+        unit=(risk_defaults.editable_field(RiskRuleType(r.rule_type)) or (None, None))[1],
     )
 
 
