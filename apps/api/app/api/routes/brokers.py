@@ -126,6 +126,14 @@ def _check_credential_ref(ref: str | None, user) -> None:
 async def create_account(body: CreateAccountRequest, user: VerifiedUser, db: DbSession):
     if body.environment == Environment.LIVE and body.broker == Broker.PAPER:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Paper broker cannot be live")
+    # A real broker stamped 'paper' is not a harmless mislabel: the strategy
+    # runner skips a non-live strategy on a live-only instance and LEAVES IT
+    # RUNNING, so it looks started and never trades. The field defaults to
+    # paper and the UI has no control for it, so the default alone produced
+    # exactly that. An account at a real broker is a live account.
+    environment = body.environment
+    if body.broker != Broker.PAPER and not get_settings().enable_paper_trading:
+        environment = Environment.LIVE
     # Existing paper accounts stay readable; new ones are not created once the
     # instance has moved to live-only.
     if body.broker == Broker.PAPER and not get_settings().enable_paper_trading:
@@ -139,7 +147,7 @@ async def create_account(body: CreateAccountRequest, user: VerifiedUser, db: DbS
         user_id=user.id,
         broker=body.broker.value,
         label=body.label,
-        environment=body.environment.value,
+        environment=environment.value,
         credential_ref=body.credential_ref.strip().upper() if body.credential_ref else None,
         broker_client_id=body.broker_client_id,
         status="connected" if body.broker == Broker.PAPER else "disconnected",

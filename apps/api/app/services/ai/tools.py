@@ -15,6 +15,7 @@ from app.db.models import (
     AIProposal,
     BrokerAccount,
     FundsSnapshot,
+    HoldingsSnapshot,
     Order,
     Position,
     RiskRule,
@@ -28,6 +29,19 @@ TOOLS: list[dict] = [
     {
         "name": "get_positions",
         "description": "Current open positions for the selected broker account.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_holdings",
+        "description": (
+            "Shares already settled in the demat account: stock the user owns "
+            "outright, separate from intraday positions. get_positions does "
+            "NOT include these. An account can hold stock worth lakhs and "
+            "still report zero positions, so check both before concluding "
+            "the user holds nothing. Quantity is what is sellable today; "
+            "total_quantity includes pledged and blocked stock. ICICI Breeze "
+            "reports no cost basis, so average_price is often null."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -261,6 +275,32 @@ async def run_tool(
                 }
                 for p in result.scalars()
             ]
+        )
+
+    if name == "get_holdings":
+        # A JSONB snapshot written by the account sync, not a live call: the
+        # analyst must not trigger broker traffic, and the sync is the single
+        # place that talks to the broker.
+        result = await db.execute(
+            select(HoldingsSnapshot)
+            .where(HoldingsSnapshot.broker_account_id == account.id)
+            .order_by(HoldingsSnapshot.ts.desc())
+            .limit(1)
+        )
+        snap = result.scalar_one_or_none()
+        if snap is None:
+            return json.dumps(
+                {
+                    "holdings": [],
+                    "as_of": None,
+                    "note": (
+                        "No holdings snapshot yet. This means the account has "
+                        "not been synced, NOT that the user owns no stock."
+                    ),
+                }
+            )
+        return json.dumps(
+            {"holdings": snap.holdings, "as_of": snap.ts.isoformat()}, default=str
         )
 
     if name == "get_orders":
