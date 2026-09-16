@@ -21,6 +21,7 @@ from app.adapters.base import (
     BrokerError,
     FeatureNotSupportedError,
     SessionExpiredError,
+    as_int,
 )
 from app.core.security import decrypt_secret
 from app.domain.enums import Broker, Exchange, OrderSide, OrderStatus, OrderType, ProductType
@@ -105,20 +106,41 @@ class GrowwAdapter(BrokerAdapter):
         )
 
     async def get_funds(self) -> Funds:
+        # The fallback used to be `net_margin`, which is wrong twice over:
+        # the real field is net_margin_used, so it never fired, and margin
+        # USED is the opposite of available cash -- had the key been right, a
+        # missing clear_cash would have reported deployed margin as free
+        # money. Falling back to zero is the honest failure: it refuses to
+        # trade rather than inventing headroom.
+        #
+        # clear_cash itself is unverified against a real account. Groww also
+        # reports per-segment figures (equity_margin_details.cnc_balance_
+        # available and friends) which may be the number a trader actually
+        # spends from; which one is right needs a real account to settle.
         data = await self._request("GET", "/margins/detail/user")  # TODO(verify path)
         return Funds(
-            available_cash=Decimal(str(data.get("clear_cash", data.get("net_margin", 0)))),
+            available_cash=Decimal(str(data.get("clear_cash", 0) or 0)),
             raw=data,
         )
 
     async def get_holdings(self) -> list[Holding]:
+        # `quantity` is the total on record. Groww reports demat_free_quantity
+        # alongside pledge_quantity, demat_locked_quantity and t1_quantity --
+        # sizing a sell off the total counts pledged and locked stock as
+        # sellable. Same trap as Breeze's dematholdings.
+        #
+        # Exchange is hardcoded NSE because Groww's holdings payload carries
+        # no exchange field at all, only isin and trading_symbol. That is a
+        # forced guess, wrong for a BSE-only holding, and resolving it needs
+        # an isin lookup against the instruments table.
         data = await self._request("GET", "/holdings/user")  # TODO(verify path)
         return [
             Holding(
                 symbol=h.get("trading_symbol", h.get("symbol", "")),
                 exchange=Exchange.NSE,
-                quantity=int(h.get("quantity", 0)),
-                average_price=Decimal(str(h.get("average_price", 0))),
+                quantity=as_int(h.get("demat_free_quantity", h.get("quantity"))),
+                total_quantity=as_int(h.get("quantity")),
+                average_price=Decimal(str(h.get("average_price", 0) or 0)),
             )
             for h in data.get("holdings", [])
         ]

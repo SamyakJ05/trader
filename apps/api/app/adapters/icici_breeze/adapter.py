@@ -35,6 +35,7 @@ from app.adapters.base import (
     BrokerError,
     FeatureNotSupportedError,
     SessionExpiredError,
+    as_int,
 )
 from app.adapters.icici_breeze.stream import BreezeTickStream
 from app.adapters.throttle import DailyQuotaExceeded, breeze_limiter, breeze_quota
@@ -151,21 +152,6 @@ _RESPONSE_ORDER_TYPE_MAP = {
     "stop loss": OrderType.SL,
     "sl": OrderType.SL,
 }
-
-
-def _as_int(value) -> int:
-    """Broker quantities arrive as strings, sometimes as "1.0" or "-".
-
-    int("1.0") and int("-") both raise, and these run inside list
-    comprehensions where one bad row would take down an entire holdings or
-    positions fetch rather than skipping a single line.
-    """
-    if value in (None, "", "-"):
-        return 0
-    try:
-        return int(Decimal(str(value)))
-    except (ArithmeticError, ValueError):
-        return 0
 
 
 class BreezeAdapter(BrokerAdapter):
@@ -369,8 +355,8 @@ class BreezeAdapter(BrokerAdapter):
             Holding(
                 symbol=h.get("stock_code", ""),
                 exchange=Exchange.NSE,
-                quantity=_as_int(h.get("demat_avail_quantity")),
-                total_quantity=_as_int(h.get("quantity")),
+                quantity=as_int(h.get("demat_avail_quantity")),
+                total_quantity=as_int(h.get("quantity")),
                 average_price=None,
             )
             for h in rows
@@ -409,7 +395,7 @@ class BreezeAdapter(BrokerAdapter):
                     product=_POSITION_PRODUCT_MAP.get(
                         str(p.get("product_type") or "").lower(), ProductType.CNC
                     ),
-                    quantity=_as_int(p.get("quantity")),
+                    quantity=as_int(p.get("quantity")),
                     average_price=Decimal(str(p.get("average_price", 0) or 0)),
                 )
             )
@@ -457,7 +443,7 @@ class BreezeAdapter(BrokerAdapter):
                     product=_POSITION_PRODUCT_MAP.get(
                         str(o.get("product_type") or "").lower(), ProductType.CNC
                     ),
-                    quantity=_as_int(o.get("quantity")),
+                    quantity=as_int(o.get("quantity")),
                     status=_STATUS_MAP.get(o.get("status", ""), OrderStatus.OPEN),
                     raw=o,
                 )

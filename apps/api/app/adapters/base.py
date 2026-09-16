@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from decimal import Decimal
 
 from app.core.config import BrokerEnvCredentials
 from app.db.models import BrokerAccount
@@ -34,6 +35,24 @@ class FeatureNotSupportedError(BrokerError):
 
 class SessionExpiredError(BrokerError):
     """Broker session is invalid/expired; user must re-authenticate."""
+
+
+def as_int(value) -> int:
+    """Parse a broker-supplied quantity that may not be an int.
+
+    Brokers send quantities as strings, and not always clean ones: "1.0",
+    "-" for an empty cell, "" for a missing value. int() raises on all
+    three, and these parses live inside list comprehensions where one bad
+    row would abort an entire holdings or positions fetch instead of
+    skipping a line. Zero is the safe reading of an unparsable quantity --
+    it under-reports rather than inventing stock that is not there.
+    """
+    if value in (None, "", "-"):
+        return 0
+    try:
+        return int(Decimal(str(value)))
+    except (ArithmeticError, ValueError):
+        return 0
 
 
 class BrokerAdapter(ABC):

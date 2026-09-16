@@ -90,21 +90,30 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         session_validity="access token valid for the trading day",
         rate_limit_notes="documented per-endpoint limits; verify current numbers "
         "in Groww API docs before live use",
-        place_order=True,
-        modify_order=True,
-        cancel_order=True,
+        # These describe OUR adapter, not Groww's API. Groww documents all of
+        # these; this adapter implements none of them -- place_order,
+        # modify_order, cancel_order, get_instruments and subscribe_ticks
+        # every one raises FeatureNotSupportedError immediately. They were
+        # declared True, which is the most misleading thing a capability
+        # matrix can do: anything gating on these flags would offer Groww as
+        # a tradable broker that throws on every order.
+        place_order=False,
+        modify_order=False,
+        cancel_order=False,
         holdings=True,
         positions=True,
         funds=True,
-        instruments_dump=True,
-        websocket_ticks=True,
+        instruments_dump=False,
+        websocket_ticks=False,
         order_postbacks=False,
         amo_orders=False,
         bracket_gtt=False,
         exchanges=["NSE", "BSE", "NFO"],
-        notes="Adapter scaffolded; endpoint paths and payloads MUST be verified "
-        "against current Groww docs — their API surface is newer and shifts. "
-        "Feed/streaming not implemented.",
+        notes="Reads only: funds, holdings and positions are implemented and "
+        "unverified against a real account. Trading, instruments and streaming "
+        "are not implemented at all and refuse when called. Endpoint paths and "
+        "payloads MUST be verified against current Groww docs before any of "
+        "this is trusted — their API surface is newer and shifts.",
     ),
     Broker.ICICI_BREEZE: BrokerCapabilities(
         broker=Broker.ICICI_BREEZE,
