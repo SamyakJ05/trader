@@ -130,8 +130,11 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         auth_model="api_key login -> apisession token via redirect; each request "
         "signed with SHA-256 checksum of (timestamp + body + secret)",
         session_validity="session token valid ~24h",
-        rate_limit_notes="documented limits: 100 calls/min, 5000/day per user "
-        "(verify current numbers in Breeze docs)",
+        rate_limit_notes="100 calls/min and 5000/day per user, plus a separate "
+        "cap of 10 orders/second covering placement, modification, "
+        "cancellation and square-off (SEBI algo framework). All three are "
+        "enforced client-side; exceeding them is documented as blocking the "
+        "account rather than returning a retryable error.",
         place_order=True,
         modify_order=True,
         cancel_order=True,
@@ -147,14 +150,23 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         # on BSE and MCX are not available on Breeze API". Advertising it
         # offered users a segment every order would have been rejected on.
         exchanges=["NSE", "NFO"],
-        notes="Adapter scaffolded with Breeze checksum auth wiring. NOT verified "
-        "against a live account. Market coverage narrower than Zerodha (no MCX "
-        "in Breeze API as documented). Breeze uses its own stock codes rather "
-        "than NSE trading symbols (RELIANCE is roughly RELIND), and this "
-        "platform stores each broker's native codes: a strategy written "
-        "against NSE symbols will not resolve on a Breeze account, and one "
-        "written for Breeze will not resolve elsewhere. Rate and daily limits "
-        "are enforced client-side per credential ref.",
+        notes="READ PATHS VERIFIED against a real account: profile, funds, "
+        "holdings and positions have been exercised and corrected against "
+        "what ICICI actually returns. NO ORDER HAS EVER BEEN SENT, which is "
+        "why adapter_status is still scaffold — the order payloads match "
+        "ICICI's published examples field for field, but matching "
+        "documentation is not the same as having been accepted. The tick "
+        "stream is likewise unverified against a live socket; it must be "
+        "checked during market hours, since outside them a broken feed and a "
+        "quiet market are indistinguishable. Futures and options can be "
+        "built (expiry/right/strike, per the documented POST /order) but are "
+        "untested; mtf and btst are unmapped and MIS is refused. BSE and MCX "
+        "are absent because ICICI documents them as unavailable on Breeze. "
+        "Breeze uses its own stock codes rather than NSE trading symbols "
+        "(RELIANCE is RELIND), and this platform stores each broker's native "
+        "codes: a strategy written against NSE symbols will not resolve on a "
+        "Breeze account, and one written for Breeze will not resolve "
+        "elsewhere.",
     ),
 }
 
