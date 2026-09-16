@@ -7,8 +7,13 @@ from sqlalchemy import select
 
 from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
-from app.db.models import Strategy, TradingSignal
-from app.domain.enums import AuditEventType, Environment, StrategyStatus
+from app.db.models import BrokerAccount, Strategy, TradingSignal
+from app.domain.enums import (
+    AuditEventType,
+    BrokerAccountStatus,
+    Environment,
+    StrategyStatus,
+)
 from app.engines.strategy.runner import STRATEGY_REGISTRY
 from app.services import audit, killswitch
 from app.services import brokers as broker_service
@@ -141,10 +146,37 @@ async def _owned(db: DbSession, user: VerifiedUser, strategy_id: uuid.UUID) -> S
 async def start(strategy_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     strategy = await _owned(db, user, strategy_id)
     if strategy.environment == Environment.LIVE.value:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Live strategy execution is disabled in this MVP build",
-        )
+        # This was a blanket refusal reading "disabled in this MVP build",
+        # which said nothing about what would make it possible. It now states
+        # the actual preconditions, and enforces them through the same
+        # predicate the order pipeline and the UI use -- so the three cannot
+        # drift apart and promise different things.
+        #
+        # Starting a LIVE strategy is the point at which software begins
+        # placing real orders unattended, so it is checked here rather than
+        # only per order: a strategy that cannot possibly trade should not be
+        # left RUNNING and appearing to work.
+        if strategy.broker_account_id is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "A live strategy needs a broker account",
+            )
+        account = await db.get(BrokerAccount, strategy.broker_account_id)
+        if account is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Broker account not found")
+        refusal = broker_service.can_enable_live(account)
+        if refusal:
+            raise HTTPException(status.HTTP_409_CONFLICT, refusal)
+        if not account.live_enabled:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Live trading is not enabled on this broker account",
+            )
+        if account.status != BrokerAccountStatus.CONNECTED.value:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Broker account is {account.status} — reconnect before starting",
+            )
     if strategy.kind == "ai_agent":
         from app.services.ai.llm import resolve_llm
 

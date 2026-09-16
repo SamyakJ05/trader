@@ -14,6 +14,7 @@ from app.core.logging import get_logger
 from app.db.models import BrokerAccount, PaperHolding, Position, Strategy, TradingSignal
 from app.domain.enums import (
     AuditEventType,
+    BrokerAccountStatus,
     Environment,
     Exchange,
     OrderSide,
@@ -185,6 +186,26 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
         # worse than one with no data at all: it places real orders against
         # invented prices and looks like it is working.
         is_live = account.environment == Environment.LIVE.value
+
+        # A live strategy whose broker session has lapsed must not evaluate.
+        # The runner used to check only that the account existed, so it went
+        # on emitting signals; each one reached the adapter, raised
+        # SessionExpiredError, and sent the strategy to ERROR -- a state
+        # meaning "this strategy is broken and needs a human" reached by a
+        # routine event that happens every single day at the exchange flush.
+        # The user then had to restart every live strategy by hand each
+        # morning, having first worked out that nothing was actually wrong.
+        #
+        # Skipping instead leaves the strategy RUNNING and idle: when the
+        # session comes back the next tick picks up where it left off, with
+        # no intervention.
+        if is_live and account.status != BrokerAccountStatus.CONNECTED.value:
+            logger.info(
+                "strategy_idle_account_not_connected",
+                strategy=str(strategy.id),
+                account_status=account.status,
+            )
+            continue
         source = strategy.params.get("source") or (
             # Each broker's live candles carry its own source tag, and they do
             # not interchange: the two brokers do not even use the same codes
