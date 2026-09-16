@@ -172,8 +172,9 @@ export function BacktestModal({
           <p className="mt-3 text-xs text-ink-faint">
             {String(results.candle_count ?? "?")} bars from{" "}
             {String(result.config && (result.config as Record<string, unknown>).history_symbol)}.
-            Costs are modelled, not guaranteed; see the engine&rsquo;s stated
-            limitations before trusting a number here.
+            Costs are modelled, not guaranteed. This run is saved — open it on
+            the Backtests page to read the engine&rsquo;s full list of
+            modelling limitations before trusting any number here.
           </p>
         </div>
       )}
