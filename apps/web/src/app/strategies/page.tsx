@@ -5,6 +5,7 @@ import Shell from "@/components/Shell";
 import { Button, Card, EmptyState, PageHeader, Pill, Skeleton } from "@/components/ui";
 import { IconSpark } from "@/components/icons";
 import { GenerateStrategyModal } from "@/components/ai/GenerateStrategyModal";
+import { CreateStrategyModal } from "@/components/strategy/CreateStrategyModal";
 import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -16,6 +17,8 @@ export default function StrategiesPage() {
   const { data: aiStatus } = useApi<AIStatus>("/ai/status");
   const { push } = useToast();
   const [generateOpen, setGenerateOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const { data: kinds } = useApi<{ kinds: string[] }>("/strategies/kinds");
 
   async function act(id: string, action: "start" | "stop") {
     try {
@@ -53,15 +56,18 @@ export default function StrategiesPage() {
         title="Strategies"
         sub="Signal generators routed through the risk engine and order pipeline"
         action={
-          <Button
-            variant="primary"
-            onClick={() => setGenerateOpen(true)}
-            disabled={!aiStatus?.configured}
-          >
-            <span className="flex items-center gap-1.5">
-              <IconSpark width={14} height={14} /> Generate with AI
-            </span>
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={() => setCreateOpen(true)}>New strategy</Button>
+            <Button
+              variant="primary"
+              onClick={() => setGenerateOpen(true)}
+              disabled={!aiStatus?.configured}
+            >
+              <span className="flex items-center gap-1.5">
+                <IconSpark width={14} height={14} /> Generate with AI
+              </span>
+            </Button>
+          </div>
         }
       />
       {!aiStatus?.configured && (
@@ -117,16 +123,27 @@ export default function StrategiesPage() {
       ) : (
         <EmptyState
           title="No strategies yet"
-          hint="Generate one with AI or run the seed script for a demo SMA crossover."
+          hint="Create one by hand, or generate one with AI if a provider is configured."
           action={
-            aiStatus?.configured ? (
-              <Button variant="primary" onClick={() => setGenerateOpen(true)}>
-                Generate with AI
-              </Button>
-            ) : undefined
+            <div className="flex gap-2">
+              <Button onClick={() => setCreateOpen(true)}>New strategy</Button>
+              {aiStatus?.configured && (
+                <Button variant="primary" onClick={() => setGenerateOpen(true)}>
+                  Generate with AI
+                </Button>
+              )}
+            </div>
           }
         />
       )}
+
+      <CreateStrategyModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        accounts={accounts ?? []}
+        kinds={kinds?.kinds ?? ["sma_crossover"]}
+        onCreated={reload}
+      />
 
       <GenerateStrategyModal
         open={generateOpen}

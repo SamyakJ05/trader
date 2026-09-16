@@ -32,13 +32,46 @@ export default function OrdersPage() {
     quantity: 10,
     price: "",
     account: "",
+    exchange: "NSE",
+    product: "MIS",
   });
 
-  const paperAccounts = accounts?.filter((a) => a.environment === "paper") ?? [];
-  const accountId = form.account || paperAccounts[0]?.id || "";
+  // Every account, not only paper. The form was paper-only by construction,
+  // so a live account could be connected, verified and enabled and still have
+  // no way to place an order through the UI.
+  const allAccounts = accounts ?? [];
+  const accountId = form.account || allAccounts[0]?.id || "";
+  const selected = allAccounts.find((a) => a.id === accountId);
+  const isLive = selected?.environment === "live";
+
+  // Breeze accepts neither market orders nor MIS. Offering them would produce
+  // a form that always fails at the adapter, which is what the strategy
+  // runner used to do before its order shaping was fixed.
+  // SL is deliberately absent: it needs a trigger price, which this form does
+  // not collect, so offering it would produce an order the backend rejects
+  // every time. Stop orders belong in a strategy, which can set one.
+  const noMarketOrders = selected?.broker === "icici_breeze";
+  const orderTypes = noMarketOrders ? ["LIMIT"] : ["MARKET", "LIMIT"];
+  const products = noMarketOrders ? ["CNC", "NRML"] : ["MIS", "CNC", "NRML"];
+  const effectiveType = orderTypes.includes(form.order_type)
+    ? form.order_type
+    : orderTypes[0];
+  const effectiveProduct = products.includes(form.product) ? form.product : products[0];
+  const needsPrice = effectiveType === "LIMIT";
 
   async function placeOrder(e: React.FormEvent) {
     e.preventDefault();
+    // A live order spends real money and cannot be undone once it fills.
+    // Paper and live otherwise look identical in this form, so the one
+    // irreversible case asks first and names what it is about to do.
+    if (isLive) {
+      const summary =
+        `${form.side} ${form.quantity} ${form.symbol.toUpperCase()} ` +
+        `(${effectiveType}${needsPrice ? ` @ ${form.price}` : ""}, ${effectiveProduct})`;
+      if (!window.confirm(`Place a REAL order on ${selected?.label}?\n\n${summary}`)) {
+        return;
+      }
+    }
     try {
       await api("/orders", {
         method: "POST",
@@ -46,16 +79,19 @@ export default function OrdersPage() {
           broker_account_id: accountId,
           order: {
             symbol: form.symbol.toUpperCase(),
-            exchange: "NSE",
+            exchange: form.exchange,
             side: form.side,
-            order_type: form.order_type,
-            product: "MIS",
+            order_type: effectiveType,
+            product: effectiveProduct,
             quantity: Number(form.quantity),
-            price: form.order_type === "LIMIT" ? form.price : null,
+            price: needsPrice ? form.price : null,
           },
         }),
       });
-      push("success", `Order placed: ${form.side} ${form.quantity} ${form.symbol.toUpperCase()}`);
+      push(
+        "success",
+        `${isLive ? "LIVE order" : "Paper order"} placed: ${form.side} ${form.quantity} ${form.symbol.toUpperCase()}`,
+      );
       reload();
     } catch (err) {
       push("error", err instanceof Error ? err.message : "Order failed");
@@ -76,7 +112,13 @@ export default function OrdersPage() {
     <Shell>
       <PageHeader title="Orders" sub="Manual paper orders and full order history" />
 
-      <Card title="Place paper order">
+      <Card title={isLive ? "Place LIVE order" : "Place paper order"}>
+        {isLive && (
+          <p className="mb-3 rounded border border-live/40 bg-live/10 px-3 py-2 text-xs text-live">
+            This account is live. Orders placed here are sent to the broker and
+            use real money.
+          </p>
+        )}
         <form onSubmit={placeOrder} className="flex flex-wrap items-end gap-3">
           <div>
             <label className={labelClass}>Account</label>
@@ -85,9 +127,9 @@ export default function OrdersPage() {
               value={accountId}
               onChange={(e) => setForm({ ...form, account: e.target.value })}
             >
-              {paperAccounts.map((a) => (
+              {allAccounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.label}
+                  {a.label} — {a.environment}
                 </option>
               ))}
             </select>
@@ -116,14 +158,38 @@ export default function OrdersPage() {
             <label className={labelClass}>Type</label>
             <select
               className={inputClass}
-              value={form.order_type}
+              value={effectiveType}
               onChange={(e) => setForm({ ...form, order_type: e.target.value })}
             >
-              <option>MARKET</option>
-              <option>LIMIT</option>
+              {orderTypes.map((t) => (
+                <option key={t}>{t}</option>
+              ))}
             </select>
           </div>
-          {form.order_type === "LIMIT" && (
+          <div>
+            <label className={labelClass}>Product</label>
+            <select
+              className={inputClass}
+              value={effectiveProduct}
+              onChange={(e) => setForm({ ...form, product: e.target.value })}
+            >
+              {products.map((p) => (
+                <option key={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelClass}>Exchange</label>
+            <select
+              className={inputClass}
+              value={form.exchange}
+              onChange={(e) => setForm({ ...form, exchange: e.target.value })}
+            >
+              <option>NSE</option>
+              <option>BSE</option>
+            </select>
+          </div>
+          {needsPrice && (
             <div>
               <label className={labelClass}>Price</label>
               <input

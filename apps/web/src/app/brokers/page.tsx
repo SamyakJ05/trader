@@ -114,6 +114,19 @@ export default function BrokersPage() {
           else push("success", "Synced");
           break;
         }
+        case "sync-instruments": {
+          // The instrument master maps a trading symbol to the broker's own
+          // token, and nothing downstream works without it: the tick stream
+          // has nothing to subscribe to and strategy creation rejects every
+          // symbol as unknown. The nightly job does this too; this is for
+          // someone who has just connected and does not want to wait.
+          const res = await api<{ exchange: string; instruments: number }>(
+            `/brokers/accounts/${account.id}/sync-instruments`,
+            { method: "POST", body: JSON.stringify({ exchange: "NSE" }) }
+          );
+          push("success", `${res.instruments} NSE instruments synced`);
+          break;
+        }
         case "set-token":
           setTokenError(null);
           setTokenFor(account);
