@@ -233,6 +233,12 @@ def _proposal_out(p: AIProposal) -> dict:
         "product": p.product,
         "quantity": p.quantity,
         "limit_price": str(p.limit_price) if p.limit_price is not None else None,
+        # The contract. A user approving an option trade must see which
+        # contract it is -- "65 x NIFTY" alone does not say, and the same
+        # underlying has thousands of them.
+        "expiry": p.expiry.isoformat() if p.expiry else None,
+        "strike": str(p.strike) if p.strike is not None else None,
+        "option_right": p.option_right,
         "rationale": p.rationale,
         "status": p.status,
         "order_id": str(p.order_id) if p.order_id else None,

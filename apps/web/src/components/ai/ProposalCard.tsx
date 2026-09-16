@@ -47,6 +47,21 @@ export function ProposalCard({
 
   const pending = local.status === "PROPOSED";
 
+  // A symbol alone does not name an F&O contract — the same underlying has
+  // thousands — so approving one without seeing the expiry and strike is
+  // approving a trade you cannot actually identify.
+  const contract = local.expiry
+    ? [
+        local.expiry,
+        local.strike ? `${Number(local.strike)}` : null,
+        local.option_right && local.option_right !== "OTHERS"
+          ? local.option_right
+          : "FUT",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : null;
+
   return (
     <div className="rounded-xl border border-accent/30 bg-accent/5 p-3.5">
       <div className="flex items-center justify-between gap-2">
@@ -54,10 +69,12 @@ export function ProposalCard({
           <Pill value={local.side} />
           <span className="num text-sm font-semibold">
             {local.quantity} × {local.symbol}
+            {contract && <span className="text-accent"> {contract}</span>}
           </span>
           <span className="text-xs text-ink-faint">
             {local.order_type}
-            {local.limit_price ? ` @${Number(local.limit_price).toFixed(2)}` : ""} · {local.product}
+            {local.limit_price ? ` @${Number(local.limit_price).toFixed(2)}` : ""} · {local.product} ·{" "}
+            {local.exchange}
           </span>
         </div>
         <Pill value={local.status} />

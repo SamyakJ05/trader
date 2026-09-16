@@ -215,6 +215,10 @@ export interface AIProposal {
   product: string;
   quantity: number;
   limit_price: string | null;
+  // Contract, for a derivatives proposal; all null for cash.
+  expiry: string | null;
+  strike: string | null;
+  option_right: string | null;
   rationale: string;
   status: string;
   order_id: string | null;

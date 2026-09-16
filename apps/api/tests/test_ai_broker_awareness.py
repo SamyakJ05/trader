@@ -275,3 +275,27 @@ def test_a_cash_proposal_carries_no_contract():
     assert fields["expiry"] is None
     assert fields["strike"] is None
     assert fields["option_right"] is None
+
+
+def test_a_proposal_reports_its_contract_to_the_client():
+    """A user approving an option trade must be able to see which contract it
+    is. "65 x NIFTY" alone does not say, and the same underlying has
+    thousands -- so dropping these from the API response makes the approval
+    UI silently unable to show what is being approved."""
+    import uuid as _uuid
+    from datetime import date, datetime, timezone
+
+    from app.api.routes.ai import _proposal_out
+
+    proposal = SimpleNamespace(
+        id=_uuid.uuid4(), broker_account_id=_uuid.uuid4(), symbol="NIFTY",
+        exchange="NFO", side="BUY", order_type="LIMIT", product="NRML",
+        quantity=65, limit_price=Decimal("245"), rationale="x",
+        status="PROPOSED", order_id=None,
+        created_at=datetime.now(timezone.utc), decided_at=None,
+        expiry=date(2026, 9, 29), strike=Decimal("25000"), option_right="CALL",
+    )
+    out = _proposal_out(proposal)
+    assert out["expiry"] == "2026-09-29"
+    assert out["strike"] == "25000"
+    assert out["option_right"] == "CALL"
