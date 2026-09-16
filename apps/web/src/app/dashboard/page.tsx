@@ -2,6 +2,7 @@
 
 import Shell from "@/components/Shell";
 import { Card, PageHeader, Pill, Skeleton, StatCard, Td, Th } from "@/components/ui";
+import { TradingReadiness } from "@/components/TradingReadiness";
 import { ReadPathChip, SyncStatusChip } from "@/components/broker/badges";
 import { RecentAuditList } from "@/components/broker/RecentAuditList";
 import { useApi } from "@/lib/useApi";
@@ -18,7 +19,11 @@ export default function Dashboard() {
 
   return (
     <Shell>
-      <PageHeader title="Dashboard" sub="Paper trading overview across connected brokers" />
+      <PageHeader title="Dashboard" sub="Trading overview across connected brokers" />
+
+      <div className="mb-4">
+        <TradingReadiness />
+      </div>
 
       {!s ? (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

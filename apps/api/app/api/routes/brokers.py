@@ -258,6 +258,18 @@ async def sync_instruments_route(
     return {"exchange": body.exchange.upper(), "instruments": written}
 
 
+@router.get("/readiness")
+async def trading_readiness(user: VerifiedUser, db: DbSession):
+    """Everything that must be true before strategies trade unattended today.
+
+    The daily routine is a browser login before the open, because Breeze
+    sessions die at midnight IST and ICICI publish no way to renew one
+    programmatically. After that login nobody is watching, so this answers
+    "is it actually ready?" in one place rather than across four pages.
+    """
+    return await broker_service.trading_readiness(db, user.id)
+
+
 @router.post("/accounts/{account_id}/diagnostics")
 async def account_diagnostics(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     """Exercise every broker read and report what each returned.

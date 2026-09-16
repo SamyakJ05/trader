@@ -391,3 +391,161 @@ async def _instrument_coverage(db: AsyncSession, account: BrokerAccount) -> dict
         "resolved": len(symbols) - len(missing),
         "missing": missing,
     }
+
+
+async def trading_readiness(db: AsyncSession, user_id) -> dict:
+    """Everything that must be true before strategies trade unattended today.
+
+    The operator's daily routine is a browser login before the open -- Breeze
+    sessions die at midnight IST and ICICI publish no way to renew one
+    programmatically. After that login nobody is watching, so the question
+    "is it actually ready?" has to be answerable in one place rather than by
+    checking the brokers page, the strategies page, the risk page and the
+    logs separately.
+
+    Each check reports pass/fail and, when it fails, what to do about it.
+    Ordered by what blocks first: no session means nothing else matters.
+    """
+    # get_settings is imported at module scope. Re-importing it here shadowed
+    # that binding, which made the setting unpatchable from a test -- a real
+    # hazard for a check that reports whether real money may move. The rest
+    # are local only because the module does not otherwise need them.
+    from app.core.redis import get_redis
+    from app.db.models import Strategy
+    from app.domain.calendar import IST
+    from app.domain.enums import Environment, StrategyStatus
+    from app.services import killswitch
+
+    settings = get_settings()
+    checks: list[dict] = []
+
+    accounts = (
+        await db.execute(
+            select(BrokerAccount).where(
+                BrokerAccount.user_id == user_id,
+                BrokerAccount.environment == Environment.LIVE.value,
+            )
+        )
+    ).scalars().all()
+
+    def add(name: str, ok: bool, detail: str, fix: str | None = None) -> None:
+        checks.append({"check": name, "ok": ok, "detail": detail, "fix": fix})
+
+    # 1. An account at all.
+    if not accounts:
+        add(
+            "broker account",
+            False,
+            "No live broker account exists.",
+            "Connect one on the Brokers page.",
+        )
+        return {"ready": False, "checks": checks}
+    add("broker account", True, f"{len(accounts)} live account(s).")
+
+    connected = [
+        a for a in accounts if a.status == BrokerAccountStatus.CONNECTED.value
+    ]
+
+    # 2. Today's session. The one thing that expires every single day.
+    if not connected:
+        states = ", ".join(sorted({a.status for a in accounts}))
+        add(
+            "broker session",
+            False,
+            f"No connected account (status: {states}).",
+            "Log in to the broker and set the session token — this is the "
+            "daily step; sessions die at midnight IST.",
+        )
+    else:
+        soonest = min(
+            (a.session_expires_at for a in connected if a.session_expires_at),
+            default=None,
+        )
+        when = f" Expires {soonest.astimezone(IST):%H:%M IST}." if soonest else ""
+        add("broker session", True, f"{len(connected)} connected.{when}")
+
+    # 3. The gates, which are configuration rather than daily state.
+    add(
+        "live trading gate",
+        settings.enable_live_trading,
+        "ENABLE_LIVE_TRADING is on." if settings.enable_live_trading
+        else "ENABLE_LIVE_TRADING is off; no live order can be placed.",
+        None if settings.enable_live_trading
+        else "Set ENABLE_LIVE_TRADING=true in the deployment environment.",
+    )
+
+    enabled = [a for a in connected if a.live_enabled]
+    add(
+        "account live-enabled",
+        bool(enabled),
+        f"{len(enabled)} of {len(connected)} connected account(s) enabled."
+        if connected else "No connected account.",
+        None if enabled else "Enable live on the account from the Brokers page.",
+    )
+
+    # 4. The adapter's own verification state.
+    unverified = sorted(
+        {
+            a.broker
+            for a in accounts
+            if get_capabilities(Broker(a.broker)).adapter_status != AdapterStatus.WORKING
+        }
+    )
+    add(
+        "adapter verified",
+        not unverified,
+        "All adapters verified." if not unverified
+        else f"Not verified: {', '.join(unverified)}.",
+        None if not unverified
+        else "Place and cancel one real order by hand first, then mark the "
+             "adapter verified. Until then every live order is refused.",
+    )
+
+    # 5. Kill switch: silent by design, and the easiest thing to leave on.
+    engaged = await killswitch.is_global_engaged(get_redis())
+    add(
+        "kill switch",
+        not engaged,
+        "Disengaged." if not engaged else "ENGAGED — no strategy will trade.",
+        None if not engaged else "Release it on the Risk page.",
+    )
+
+    # 6. Something to actually run.
+    running = (
+        await db.execute(
+            select(Strategy).where(
+                Strategy.user_id == user_id,
+                Strategy.environment == Environment.LIVE.value,
+                Strategy.status == StrategyStatus.RUNNING.value,
+            )
+        )
+    ).scalars().all()
+    add(
+        "running strategies",
+        bool(running),
+        f"{len(running)} live strategy(ies) running."
+        if running else "No live strategy is running.",
+        None if running else "Start one on the Strategies page.",
+    )
+
+    # 7. Prices. A strategy with no ticks cannot trade even when all else
+    # passes: the runner refuses to act without a fresh quote.
+    coverage = {"symbols": 0, "resolved": 0, "missing": []}
+    for account in connected:
+        part = await _instrument_coverage(db, account)
+        coverage["symbols"] += part["symbols"]
+        coverage["resolved"] += part["resolved"]
+        coverage["missing"].extend(part["missing"])
+    if coverage["symbols"]:
+        add(
+            "instrument tokens",
+            not coverage["missing"],
+            f"{coverage['resolved']} of {coverage['symbols']} symbols resolve."
+            if coverage["missing"] else f"All {coverage['symbols']} symbols resolve.",
+            None if not coverage["missing"]
+            else f"No token for {', '.join(coverage['missing'][:5])} — those "
+                 "receive no prices and will not trade. Sync instruments and "
+                 "check the symbols are the broker's own codes.",
+        )
+
+    return {"ready": all(c["ok"] for c in checks), "checks": checks}

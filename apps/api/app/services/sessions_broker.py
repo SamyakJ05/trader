@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.logging import get_logger
 from app.db.models import BrokerAccount
 from app.domain.calendar import IST
-from app.domain.enums import AuditEventType, Broker, BrokerAccountStatus
+from app.domain.enums import AuditEventType, Broker, BrokerAccountStatus, StrategyStatus
 from app.services import audit
 
 logger = get_logger(__name__)
@@ -93,6 +93,65 @@ def is_session_stale(account: BrokerAccount, now: datetime | None = None) -> boo
     return expires_at is None and moment >= last_flush(moment, broker=account.broker)
 
 
+async def _notify_expiry(db: AsyncSession, account: BrokerAccount) -> None:
+    """Tell the owner their session died, if anything was depending on it.
+
+    Breeze sessions die at midnight IST and ICICI publish no way to renew one
+    programmatically -- a browser login is required daily. So an unattended
+    live strategy stops at midnight and stays stopped until a person logs in,
+    and without this the only signal is that orders quietly stop appearing.
+
+    Sent only when a strategy is actually RUNNING on the account. A warning
+    about an idle account is noise, and noise is how a real warning gets
+    ignored.
+
+    Best-effort: email failure must not undo the expiry, which is a fact about
+    the broker regardless of whether anyone was told.
+    """
+    from app.db.models import Strategy, User
+    from app.services import email
+
+    try:
+        running = (
+            await db.execute(
+                select(Strategy.name).where(
+                    Strategy.broker_account_id == account.id,
+                    Strategy.status == StrategyStatus.RUNNING.value,
+                )
+            )
+        ).scalars().all()
+        if not running:
+            return
+
+        user = await db.get(User, account.user_id)
+        if user is None or not user.email:
+            return
+
+        names = ", ".join(running[:5])
+        more = f" and {len(running) - 5} more" if len(running) > 5 else ""
+        await email.send(
+            user.email,
+            f"Trading stopped: {account.label} session expired",
+            (
+                f"Your {account.broker} session expired at the daily reset, so "
+                f"these strategies have stopped trading:\n\n  {names}{more}\n\n"
+                "They are still RUNNING and will resume on their own once the "
+                "account is reconnected — nothing needs restarting.\n\n"
+                "Reconnecting needs a browser login: your broker publishes no "
+                "way to renew a session automatically.\n\n"
+                "Open the Brokers page to reconnect."
+            ),
+        )
+        logger.info(
+            "session_expiry_notified",
+            broker_account_id=str(account.id),
+            strategies=len(running),
+        )
+    except Exception:
+        # Never let a notification failure affect the expiry itself.
+        logger.exception("session_expiry_notify_failed", broker_account_id=str(account.id))
+
+
 async def expire_stale_sessions(db: AsyncSession, now: datetime | None = None) -> int:
     """Mark accounts whose broker session has been flushed.
 
@@ -126,6 +185,7 @@ async def expire_stale_sessions(db: AsyncSession, now: datetime | None = None) -
             )
             await db.commit()
             expired += 1
+            await _notify_expiry(db, account)
         except Exception:
             await db.rollback()
             logger.exception("session_expiry_failed", broker_account_id=str(account.id))
