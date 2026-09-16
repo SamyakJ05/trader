@@ -674,8 +674,13 @@ class BreezeAdapter(BrokerAdapter):
         """A started Breeze tick stream.
 
         Takes the same mapping shape as the Kite feed so one supervisor can
-        drive either, but Breeze subscribes by stock code rather than numeric
-        token — the values are what it needs, and the keys are ignored.
+        drive either. BOTH halves matter here: Breeze subscribes by numeric
+        security-master token (the keys), and every tick comes back
+        identified only by the room that token names, so the stock code (the
+        values) is how a tick is matched to an instrument.
+
+        A previous version passed only the values, on the belief that Breeze
+        subscribed by stock code. It does not, and the feed was silent.
         """
         if not self.account.session_token_enc:
             raise SessionExpiredError("Breeze ticks need a live session; connect first")
@@ -683,10 +688,15 @@ class BreezeAdapter(BrokerAdapter):
             raise SessionExpiredError(
                 "Breeze streaming needs the account's user id; re-run the session exchange"
             )
+        if not token_to_symbol:
+            raise BrokerError(
+                "Breeze ticks need instrument tokens. Sync the security master "
+                "first — without it there is nothing to subscribe to."
+            )
         stream = BreezeTickStream(
             user_id=self.account.broker_client_id,
             session_key=decrypt_secret(self.account.session_token_enc),
-            stock_codes=sorted(set(token_to_symbol.values())),
+            token_to_symbol={str(k): str(v) for k, v in token_to_symbol.items()},
         )
         await stream.start()
         return stream
