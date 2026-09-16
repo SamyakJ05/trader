@@ -140,6 +140,34 @@ make bootstrap-admin email=you@example.com   # first operator; registration is i
 docker compose restart worker    # safe any time: the tick is idempotent
 ```
 
+### Importing history for a backtest
+
+A backtest replays stored candles; it cannot invent bars it does not have.
+Nothing imports history automatically, and the strategies most worth testing
+are usually the ones whose symbols were never imported.
+
+```bash
+docker compose exec api python -m app.cli.import_history \
+  --symbol RELIANCE --interval 1d --start 2024-01-01 --end 2026-01-01
+```
+
+One symbol per run, and always the **NSE ticker** — the importer appends
+`.NS` for Yahoo. A Breeze strategy names ICICI's own codes (RELIND), and the
+backtest resolves those to the NSE ticker through the instrument master's
+ISIN, so sync instruments before importing or the mapping has nothing to
+work from.
+
+Watch for the split warnings it prints. Yahoo's unadjusted data records a
+split as a genuine overnight collapse, and a backtest spanning that date
+reads it as a price move — the equity curve looks catastrophic for a reason
+that has nothing to do with the strategy.
+
+Intraday history is retention-limited at the source — Yahoo serves only a
+recent window of 1m bars, well short of a year — so a long intraday backtest
+is not available regardless of what dates you ask for. An empty import with
+the message "check symbol, dates and intraday retention" usually means the
+range is older than that window, not that the symbol is wrong.
+
 ### Deploying a change
 
 ```bash
