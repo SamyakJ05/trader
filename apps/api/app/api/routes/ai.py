@@ -353,12 +353,25 @@ async def reject_proposal(proposal_id: uuid.UUID, user: VerifiedUser, db: DbSess
 
 class GenerateBody(BaseModel):
     prompt: str = Field(min_length=8, max_length=2000)
+    # Optional so an existing client keeps working, but without it the model
+    # is told the generic NSE/MIS rules -- which are wrong for Breeze on both
+    # counts, and every strategy generated for one would emit orders the
+    # adapter refuses.
+    broker_account_id: uuid.UUID | None = None
 
 
 @router.post("/strategies/generate")
 async def generate_strategy(body: GenerateBody, user: VerifiedUser, db: DbSession):
     llm = await _require_llm(db, user.id)
+    broker = environment = None
+    if body.broker_account_id is not None:
+        account = await broker_service.get_account(db, user.id, body.broker_account_id)
+        if account is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Broker account not found")
+        broker, environment = account.broker, account.environment
     try:
-        return await generator.generate(llm, body.prompt)
+        return await generator.generate(
+            llm, body.prompt, broker=broker, environment=environment
+        )
     except LLMError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"AI provider error: {e}") from e

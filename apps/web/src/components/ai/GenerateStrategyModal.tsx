@@ -19,13 +19,17 @@ export function GenerateStrategyModal({
   onCreated: () => void;
 }) {
   const { push } = useToast();
-  const paperAccounts = accounts.filter((a) => a.environment === "paper");
+  // Every account, not only paper. Live strategies are supported now, and
+  // filtering them out here meant the one path most in need of an explicit
+  // warning simply could not be reached.
+  const usableAccounts = accounts;
   const [prompt, setPrompt] = useState("");
   const [accountId, setAccountId] = useState("");
   const [draft, setDraft] = useState<StrategyDraft | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const selected = accountId || paperAccounts[0]?.id || "";
+  const selected = accountId || usableAccounts[0]?.id || "";
+  const selectedAccount = usableAccounts.find((a) => a.id === selected);
 
   function reset() {
     setPrompt("");
@@ -37,9 +41,11 @@ export function GenerateStrategyModal({
     e.preventDefault();
     setBusy(true);
     try {
+      // The account decides what the model is told: Breeze needs CNC, limit
+      // orders and ICICI's own stock codes, none of which it can infer.
       const res = await api<StrategyDraft>("/ai/strategies/generate", {
         method: "POST",
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, broker_account_id: selected }),
       });
       setDraft(res);
     } catch (err) {
@@ -59,7 +65,10 @@ export function GenerateStrategyModal({
           name: draft.name,
           kind: draft.kind,
           broker_account_id: selected,
-          environment: "paper",
+          // The account's own environment, not a hardcoded "paper". Choosing
+          // a live account and silently getting a paper strategy is a trap:
+          // it looks attached to the live account and never trades.
+          environment: selectedAccount?.environment ?? "paper",
           symbols: draft.symbols,
           params: draft.params,
         }),
@@ -97,18 +106,24 @@ export function GenerateStrategyModal({
             minLength={8}
             maxLength={2000}
           />
-          <label className={labelClass}>Paper account</label>
+          <label className={labelClass}>Account</label>
           <select
             className={`${inputClass} mb-4`}
             value={selected}
             onChange={(e) => setAccountId(e.target.value)}
           >
-            {paperAccounts.map((a) => (
+            {usableAccounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.label}
+                {a.label} — {a.environment}
               </option>
             ))}
           </select>
+          {selectedAccount?.environment === "live" && (
+            <p className="mb-4 rounded border border-live/40 bg-live/10 px-3 py-2 text-xs text-live">
+              This account is live. The strategy is created as a draft and
+              places real orders only once you start it.
+            </p>
+          )}
           <div className="flex justify-end gap-2">
             <Button onClick={onClose}>Cancel</Button>
             <Button type="submit" variant="primary" disabled={busy || !selected}>

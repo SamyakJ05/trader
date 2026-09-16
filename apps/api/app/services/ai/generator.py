@@ -6,18 +6,58 @@ from app.engines.strategy.runner import STRATEGY_REGISTRY
 from app.services.ai.llm import LLMClient, LLMError
 
 GENERATOR_SYSTEM = """You translate a plain-English trading idea into a strategy \
-config for a paper-trading platform on Indian markets (NSE). Available strategy kinds \
+config for an algorithmic trading platform on Indian markets. Available strategy kinds \
 and their params:
 
 - sma_crossover: params {"fast": int (short SMA window), "slow": int (long SMA window), \
-"quantity": int (shares per signal), "exchange": "NSE", "product": "MIS"}
+"quantity": int (shares per signal)}
 - ai_agent: an LLM decides BUY/SELL/HOLD per evaluation. params {"instructions": str \
 (plain-English trading instructions), "quantity": int, "min_interval_seconds": int (>=60), \
-"max_decisions_per_day": int (1-50), "exchange": "NSE", "product": "MIS"}
+"max_decisions_per_day": int (1-50)}
 
-Pick the kind that fits the idea best. Symbols are NSE trading symbols (e.g. RELIANCE, \
-TCS, INFY). Keep quantities small (paper account). rationale explains your choices in \
-two sentences or fewer."""
+Pick the kind that fits the idea best. Keep quantities small. rationale explains your \
+choices in two sentences or fewer."""
+
+# The account's own constraints, appended per request. These used to be baked
+# into the prompt above as `"exchange": "NSE", "product": "MIS"` on both
+# templates -- which is wrong for a Breeze account on both counts, so every
+# strategy generated for one emitted orders the adapter refuses. The model
+# cannot infer any of this from the schema.
+_BROKER_RULES = {
+    "icici_breeze": (
+        'This account is ICICI Direct Breeze. Set "product": "CNC" (it has no '
+        'MIS intraday product) and "exchange": "NSE" (BSE and MCX are '
+        "unavailable). Breeze accepts no market orders, so also set "
+        '"order_type": "LIMIT" and optionally "limit_buffer_pct" (0.003 = '
+        "0.30% through the last price). Symbols are ICICI's own stock codes, "
+        "NOT NSE tickers: RELIANCE is RELIND, INFOSYS is INFTEC. If you are "
+        "not certain of a code, say so in the rationale rather than guessing "
+        "— an unknown symbol is rejected when the strategy is created."
+    ),
+}
+
+_DEFAULT_RULES = (
+    'Set "exchange": "NSE" and "product": "MIS". Symbols are NSE trading '
+    "symbols (e.g. RELIANCE, TCS, INFY)."
+)
+
+_ENVIRONMENT_RULES = {
+    "paper": "This is a PAPER account: fills are simulated, no real money moves.",
+    "live": (
+        "This account is LIVE: the strategy you write will place REAL orders "
+        "with REAL money once started. Keep quantities minimal and prefer "
+        "conservative parameters."
+    ),
+}
+
+
+def build_system_prompt(broker: str | None, environment: str | None) -> str:
+    """The generator rules plus the target account's own constraints."""
+    parts = [GENERATOR_SYSTEM, _BROKER_RULES.get(broker or "", _DEFAULT_RULES)]
+    note = _ENVIRONMENT_RULES.get(environment or "")
+    if note:
+        parts.append(note)
+    return "\n\n".join(parts)
 
 
 def draft_schema() -> dict:
@@ -58,8 +98,16 @@ def validate_draft(draft: dict) -> dict:
     }
 
 
-async def generate(llm: LLMClient, prompt: str) -> dict:
-    draft = await llm.generate_json(GENERATOR_SYSTEM, prompt, draft_schema())
+async def generate(
+    llm: LLMClient,
+    prompt: str,
+    *,
+    broker: str | None = None,
+    environment: str | None = None,
+) -> dict:
+    draft = await llm.generate_json(
+        build_system_prompt(broker, environment), prompt, draft_schema()
+    )
     try:
         return validate_draft(draft)
     except ValueError as e:

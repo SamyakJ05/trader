@@ -181,3 +181,46 @@ def test_other_brokers_are_unaffected():
     )
     assert fields["order_type"] == "MARKET"
     assert fields["product"] == "MIS"
+
+
+# ── the strategy generator ───────────────────────────────────────────
+
+
+def test_the_generator_is_told_breezes_constraints():
+    """The prompt used to bake `"exchange": "NSE", "product": "MIS"` into both
+    strategy templates. For a Breeze account that is wrong on both counts, so
+    every generated strategy emitted orders the adapter refuses -- and the
+    model cannot infer any of it from the schema."""
+    from app.services.ai.generator import build_system_prompt
+
+    prompt = build_system_prompt("icici_breeze", "paper")
+    assert '"product": "CNC"' in prompt
+    assert "no MIS" in prompt
+    assert "no market orders" in prompt
+    assert "RELIND" in prompt  # its codes are not NSE tickers
+
+
+def test_another_broker_gets_the_ordinary_rules():
+    from app.services.ai.generator import build_system_prompt
+
+    prompt = build_system_prompt("zerodha", "paper")
+    assert '"product": "MIS"' in prompt
+    assert "RELIND" not in prompt
+
+
+def test_the_generator_knows_when_it_is_writing_for_real_money():
+    from app.services.ai.generator import build_system_prompt
+
+    live = build_system_prompt("zerodha", "live")
+    assert "REAL orders" in live
+    assert "simulated" not in live
+    assert "simulated" in build_system_prompt("zerodha", "paper")
+
+
+def test_an_unknown_broker_still_gets_usable_rules():
+    """A generator that says nothing about exchange or product produces a
+    draft the strategies API then rejects."""
+    from app.services.ai.generator import build_system_prompt
+
+    prompt = build_system_prompt(None, None)
+    assert "NSE" in prompt
