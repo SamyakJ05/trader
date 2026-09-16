@@ -203,7 +203,20 @@ def _provider_hint(provider: str, error: str) -> str | None:
     lowered = error.lower()
     if provider != "bedrock":
         return None
-    if "security token" in lowered or "403" in lowered or "unrecognizedclient" in lowered:
+    # Matched on the message, not the status code. Bedrock answers BOTH a bad
+    # credential and an unavailable model with 403, so keying on the code told
+    # an operator whose key was fine to go and check their key.
+    if "not available for this account" in lowered or "explore other available" in lowered:
+        return (
+            "The credentials worked; AWS refused the MODEL. Either it is not "
+            "enabled for your account, or the id is wrong. In the Bedrock "
+            "console (same region) open Model catalog, find a Claude model "
+            "showing 'Access granted', and copy its exact Model ID into the "
+            "Model field here. Recent Claude models are addressed as "
+            "region-prefixed inference profiles (us.anthropic.… / "
+            "eu.anthropic.…) rather than the bare anthropic.… id."
+        )
+    if "security token" in lowered or "unrecognizedclient" in lowered:
         return (
             "AWS rejected the credentials. Bedrock needs an IAM access key "
             "with bedrock:InvokeModel, not a Claude API key — check the key, "

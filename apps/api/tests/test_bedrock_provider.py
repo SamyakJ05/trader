@@ -161,3 +161,33 @@ def test_a_bearer_token_survives_a_round_trip_through_storage():
     creds = json.loads(decrypt_secret(blob))
     assert creds["api_key"] == "ABSKtoken"
     assert creds["region"] == "ap-south-1"
+
+
+def test_an_unavailable_model_is_not_reported_as_a_credential_problem():
+    """Bedrock answers BOTH a bad credential and an unavailable model with
+    403. Keying the hint on the status code told an operator whose key was
+    working perfectly to go and check their key -- the exact wrong direction,
+    and the kind of message that costs an hour.
+
+    This is the real error text from a live account.
+    """
+    error = (
+        "Error code: 403 - {'message': 'anthropic.claude-opus-5 is not "
+        "available for this account. You can explore other available models "
+        "on Amazon Bedrock.'}"
+    )
+    hint = _provider_hint("bedrock", error)
+    assert hint
+    assert "credentials worked" in hint
+    assert "Model catalog" in hint
+    # Must NOT send them back to the credential.
+    assert "IAM access key" not in hint
+
+
+def test_a_genuine_credential_failure_still_says_so():
+    """The fix must not swing the other way: a real auth failure should still
+    point at the credential."""
+    hint = _provider_hint(
+        "bedrock", "403 The security token included in the request is invalid."
+    )
+    assert hint and "IAM access key" in hint
