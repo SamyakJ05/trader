@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
-from app.domain.enums import SignalType
+from app.domain.enums import OrderType, ProductType, SignalType
 
 
 class StrategyContext(BaseModel):
@@ -20,10 +20,39 @@ class StrategyContext(BaseModel):
 
 
 class Signal(BaseModel):
+    """What a strategy decided, including how it wants the order shaped.
+
+    Execution intent belongs to the strategy, not to the platform. A momentum
+    entry that must not be missed and a patient mean-reversion exit want
+    different aggression, and a single platform-wide buffer would serve one
+    badly to serve the other. Every field below is optional: a strategy that
+    says nothing gets the account's defaults, which is what the simple ones
+    do.
+    """
+
     symbol: str
     signal_type: SignalType
     quantity: int
     note: str = ""
+
+    # None means "let the runner decide from the account and params". A
+    # strategy that names a type gets exactly that type.
+    order_type: OrderType | None = None
+    product: ProductType | None = None
+
+    # An explicit price, when the strategy has computed one itself.
+    limit_price: Decimal | None = None
+
+    # How far through the last traded price to place a marketable limit, as a
+    # fraction (0.003 = 0.30%). Used only when order_type is MARKET or LIMIT
+    # and no limit_price was given. Buy limits sit above the last price and
+    # sell limits below, so the order crosses the spread and fills rather than
+    # resting. Bounded by MAX_LIMIT_BUFFER_PCT: a strategy asking to pay 50%
+    # through the book has a bug, and the platform should not execute a bug.
+    limit_buffer_pct: Decimal | None = None
+
+    # For stop-loss orders.
+    trigger_price: Decimal | None = None
 
 
 class StrategyBase(ABC):

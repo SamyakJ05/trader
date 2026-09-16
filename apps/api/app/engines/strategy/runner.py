@@ -17,18 +17,16 @@ from app.domain.enums import (
     Environment,
     Exchange,
     OrderSide,
-    OrderType,
-    ProductType,
     SignalType,
     StrategyStatus,
 )
-from app.domain.models import OrderRequest
 from app.engines.market.candles import history as candle_history
 from app.engines.paper import market_sim
+from app.engines.strategy import execution
 from app.engines.strategy.ai_agent import AiAgentStrategy
 from app.engines.strategy.base import AsyncStrategyBase, Signal, StrategyBase, StrategyContext
 from app.engines.strategy.sma_crossover import SmaCrossover
-from app.services import audit, killswitch
+from app.services import audit, killswitch, quotes
 from app.services import orders as order_service
 from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
 
@@ -99,13 +97,36 @@ async def _act_on_signal(
     )
     await db.flush()
 
-    request = OrderRequest(
-        symbol=signal.symbol,
-        exchange=Exchange(strategy.params.get("exchange", "NSE")),
-        side=_SIGNAL_SIDE[signal.signal_type],
-        order_type=OrderType.MARKET,
-        product=ProductType(strategy.params.get("product", "MIS")),
-        quantity=signal.quantity,
+    exchange = Exchange(strategy.params.get("exchange", "NSE"))
+    side = _SIGNAL_SIDE[signal.signal_type]
+
+    # How the order is expressed is the broker's business and the strategy's
+    # preference, not a constant. This used to be MARKET/MIS unconditionally,
+    # which Breeze refuses on both counts -- so every signal a Breeze strategy
+    # produced passed risk checks, was recorded as an order, and then failed
+    # at the adapter.
+    #
+    # The price is fetched only for the account's own environment: paper
+    # prices come from the simulator and live from the last real tick, and
+    # reference_price refuses rather than crossing the two.
+    try:
+        last_price = await quotes.reference_price(
+            db, redis, account=account, symbol=signal.symbol, exchange=exchange.value
+        )
+    except quotes.NoQuoteAvailable:
+        # place_order would refuse for the same reason a moment later, but
+        # only after the signal had been recorded as acted upon. Left as None
+        # so build_order_request refuses with the specific reason when it
+        # actually needs a price, and passes through untouched when it does
+        # not -- a plain market order to a broker that accepts them.
+        last_price = None
+    request = execution.build_order_request(
+        signal=signal,
+        side=side,
+        exchange=exchange,
+        broker=account.broker,
+        params=strategy.params,
+        last_price=last_price,
     )
     client_order_id = f"st-{strategy.id.hex[:8]}-{uuid.uuid4().hex[:10]}"
     order = await order_service.place_order(
