@@ -229,6 +229,16 @@ async def sync_snapshots(db: AsyncSession, account: BrokerAccount) -> dict:
         except (BrokerError, FeatureNotSupportedError) as e:
             synced["skipped"].append(f"holdings: {e}")
 
+        # Positions were never synced at all -- only funds and holdings were,
+        # so the Positions page showed nothing for a live account no matter
+        # what the broker reported. Holdings are shares settled in demat;
+        # positions are open intraday and F&O exposure, and they are the ones
+        # a strategy sizes against.
+        try:
+            synced["positions"] = await _sync_positions(db, account, adapter)
+        except (BrokerError, FeatureNotSupportedError) as e:
+            synced["skipped"].append(f"positions: {e}")
+
     account.last_sync_at = datetime.now(timezone.utc)
     await audit.emit(
         db,
@@ -240,6 +250,71 @@ async def sync_snapshots(db: AsyncSession, account: BrokerAccount) -> dict:
     )
     await db.commit()
     return synced
+
+
+async def _sync_positions(db: AsyncSession, account: BrokerAccount, adapter) -> int:
+    """Mirror the broker's open positions into our Position rows.
+
+    The broker is the source of truth here, not our fill history: a position
+    opened outside this platform, or one whose fill we missed, still exists at
+    the broker and a strategy must size against reality rather than against
+    what we happened to record.
+
+    Rows the broker no longer reports are zeroed rather than deleted, because
+    realized_pnl on them is part of the day's accounting and deleting it would
+    quietly change the numbers.
+    """
+    from app.db.models import Position
+
+    positions = await adapter.get_positions()
+    seen: set[tuple[str, str, str]] = set()
+
+    for reported in positions:
+        key = (reported.symbol, reported.exchange.value, reported.product.value)
+        seen.add(key)
+        existing = (
+            await db.execute(
+                select(Position).where(
+                    Position.broker_account_id == account.id,
+                    Position.symbol == reported.symbol,
+                    Position.exchange == reported.exchange.value,
+                    Position.product == reported.product.value,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if existing is None:
+            existing = Position(
+                user_id=account.user_id,
+                broker_account_id=account.id,
+                environment=account.environment,
+                symbol=reported.symbol,
+                exchange=reported.exchange.value,
+                product=reported.product.value,
+            )
+            db.add(existing)
+
+        existing.quantity = reported.quantity
+        existing.average_price = reported.average_price
+        if reported.last_price is not None:
+            existing.last_price = reported.last_price
+        if reported.realized_pnl is not None:
+            existing.realized_pnl = reported.realized_pnl
+
+    # Anything we hold a row for that the broker no longer reports is closed.
+    stale = (
+        await db.execute(
+            select(Position).where(
+                Position.broker_account_id == account.id,
+                Position.quantity != 0,
+            )
+        )
+    ).scalars()
+    for row in stale:
+        if (row.symbol, row.exchange, row.product) not in seen:
+            row.quantity = 0
+
+    return len(positions)
 
 
 async def diagnostics(db: AsyncSession, account: BrokerAccount) -> dict:

@@ -90,20 +90,35 @@ function BrokerHoldingsCard({ account }: { account: BrokerAccount }) {
 }
 
 export default function PositionsPage() {
+  const { data: accounts } = useApi<BrokerAccount[]>("/brokers/accounts", 15000);
+
+  // Follow the accounts rather than assuming paper. This was pinned to
+  // environment=paper, so a live position could never appear here however
+  // many the broker reported — the table read "No open positions" while the
+  // account held some.
+  const hasLive = (accounts ?? []).some((a) => a.environment === "live");
+  const environment = hasLive ? "live" : "paper";
+
   const { data: positions, loading } = useApi<Position[]>(
-    "/portfolio/positions?environment=paper",
+    `/portfolio/positions?environment=${environment}`,
     5000
   );
 
   const { data: holdings } = useApi<Position[]>("/portfolio/delivery", 5000);
-  const { data: accounts } = useApi<BrokerAccount[]>("/brokers/accounts", 15000);
   // Paper is its own settled-holdings section below; this is specifically
   // for a real broker account's own portfolio, pulled from its last sync.
   const brokerAccounts = accounts?.filter((a) => a.broker !== "paper") ?? [];
 
   return (
     <Shell>
-      <PageHeader title="Positions" sub="Paper positions and settled delivery holdings, marked to the simulated feed" />
+      <PageHeader
+        title="Positions"
+        sub={
+          hasLive
+            ? "Open positions from your broker, and shares held in demat"
+            : "Paper positions and settled delivery holdings, marked to the simulated feed"
+        }
+      />
       {brokerAccounts.length > 0 && (
         <div className="mb-5 space-y-4">
           {brokerAccounts.map((a) => (
@@ -155,7 +170,11 @@ export default function PositionsPage() {
       ) : (
         <EmptyState
           title="No open positions"
-          hint="Place a paper order from the Orders page or start a strategy to build positions."
+          hint={
+            hasLive
+              ? "Positions are intraday and F&O exposure. Shares you own outright are holdings — shown above, from your broker — and an empty table here is normal when you hold only delivery stock."
+              : "Place an order from the Orders page or start a strategy to build positions."
+          }
         />
       )}
       <div className="mt-5">
