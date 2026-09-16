@@ -1,15 +1,18 @@
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Literal
 
+from arq.connections import RedisSettings, create_pool
+from arq.jobs import Job, JobStatus
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import get_settings
 from app.core.deps import DbSession, VerifiedUser
 from app.db.models import BacktestRun, BrokerAccount, Candle, Strategy
 from app.domain.calendar import CalendarUnavailable
@@ -321,3 +324,92 @@ async def get_backtest(run_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     if row is None:
         raise HTTPException(404, "Backtest not found")
     return out(row)
+
+
+# ── history import ───────────────────────────────────────────────────
+
+
+class ImportHistoryBody(BaseModel):
+    """Import market history so a backtest has bars to replay.
+
+    Symbols are NSE tickers, which is what the data source keys on. A Breeze
+    strategy names ICICI's own codes (RELIND), and the backtest resolves those
+    to the ticker through the instrument master's ISIN -- so import the
+    ticker, not the broker code.
+    """
+
+    # Capped because each symbol is a separate slow download; a request naming
+    # fifty would run for many minutes and the operator would have no idea how
+    # far it had got.
+    symbols: list[str] = Field(min_length=1, max_length=10)
+    interval: Literal["1m", "5m", "1d"] = "1d"
+    start: date
+    end: date
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.start >= self.end:
+            raise ValueError("Start must precede end")
+        self.symbols = [s.strip().upper() for s in self.symbols if s.strip()]
+        if not self.symbols:
+            raise ValueError("Name at least one symbol")
+        return self
+
+
+@router.post("/history", status_code=202)
+async def import_history(body: ImportHistoryBody, user: VerifiedUser):
+    """Queue a history import. Returns a job id to poll.
+
+    202 rather than 200: the work has been accepted, not done. The download
+    is slow enough that holding the request open would time out behind the
+    proxy, so it runs in the worker and the client polls.
+    """
+    try:
+        pool = await create_pool(RedisSettings.from_dsn(get_settings().redis_url))
+    except Exception as exc:  # pragma: no cover - redis down is an outage
+        raise HTTPException(503, f"Job queue unavailable: {exc}") from exc
+    try:
+        job = await pool.enqueue_job(
+            "import_history_job",
+            user_id=str(user.id),
+            symbols=body.symbols,
+            interval=body.interval,
+            start=body.start.isoformat(),
+            end=body.end.isoformat(),
+        )
+    finally:
+        await pool.aclose()
+    if job is None:  # pragma: no cover - arq returns None only on a dedupe clash
+        raise HTTPException(409, "That import is already queued")
+    return {"job_id": job.job_id, "symbols": body.symbols, "status": "queued"}
+
+
+@router.get("/history/{job_id}")
+async def import_history_status(job_id: str, user: VerifiedUser):
+    """Where a queued import has got to.
+
+    A finished job reports per-symbol results, including the ones that
+    failed: a delisted ticker or a range Yahoo has no data for must not look
+    like success, and the operator needs to know which symbols actually
+    landed.
+    """
+    try:
+        pool = await create_pool(RedisSettings.from_dsn(get_settings().redis_url))
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(503, f"Job queue unavailable: {exc}") from exc
+    try:
+        job = Job(job_id, pool)
+        status = await job.status()
+        if status == JobStatus.not_found:
+            raise HTTPException(404, "Job not found — it may have expired")
+        if status is not JobStatus.complete:
+            return {"job_id": job_id, "status": status.value}
+        try:
+            result = await job.result(timeout=0)
+        except Exception as exc:
+            # The job raised. Reported as a failed status rather than a 500:
+            # the request itself succeeded, and the operator needs the reason.
+            return {"job_id": job_id, "status": "failed", "error": str(exc)[:300]}
+    finally:
+        await pool.aclose()
+    return {"job_id": job_id, "status": "complete", **result}

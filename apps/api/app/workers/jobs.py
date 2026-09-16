@@ -188,3 +188,50 @@ async def order_reconcile_tick(ctx: dict) -> None:
         return
     if changed:
         logger.info("order_reconcile_tick", orders=changed)
+
+
+async def import_history_job(
+    ctx: dict,
+    *,
+    user_id: str,
+    symbols: list[str],
+    interval: str,
+    start: str,
+    end: str,
+) -> dict:
+    """Import market history for one or more symbols.
+
+    An ad-hoc job rather than a request handler: the download is a slow bulk
+    fetch from Yahoo, and a year of daily bars across several symbols would
+    hold an HTTP connection open long enough to time out behind the proxy.
+
+    Each symbol is committed on its own. One bad ticker -- a delisting, a
+    typo, a range Yahoo has no data for -- must not discard the symbols that
+    imported cleanly before it, because the operator would have no way to
+    tell which ones landed.
+    """
+    from datetime import date as _date
+
+    from app.services.history import import_symbol
+
+    imported, failed = [], []
+    for symbol in symbols:
+        async with async_session_factory() as db:
+            try:
+                report = await import_symbol(
+                    db,
+                    symbol=symbol,
+                    interval=interval,
+                    start=_date.fromisoformat(start),
+                    end=_date.fromisoformat(end),
+                )
+                imported.append(report)
+            except Exception as exc:
+                await db.rollback()
+                logger.warning(
+                    "history_import_failed", symbol=symbol, error=str(exc)
+                )
+                # The message is the operator's only clue, and Yahoo's are
+                # usually actionable ("no data found for this date range").
+                failed.append({"symbol": symbol, "error": str(exc)[:300]})
+    return {"imported": imported, "failed": failed}

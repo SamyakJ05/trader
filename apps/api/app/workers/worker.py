@@ -11,6 +11,7 @@ from app.core.logging import configure_logging
 from app.workers import tick_stream
 from app.workers.jobs import (
     broker_session_tick,
+    import_history_job,
     instrument_sync_tick,
     order_reconcile_tick,
     paper_tick,
@@ -51,7 +52,10 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions: list = []
+    # Ad-hoc jobs the API enqueues. History import is here rather than in a
+    # request handler because the Yahoo download is slow enough to time out
+    # behind the proxy.
+    functions: list = [import_history_job]
     cron_jobs = [
         # price step + fills every 5s; strategies every 15s
         cron(paper_tick, second={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),

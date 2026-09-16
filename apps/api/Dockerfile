@@ -10,9 +10,14 @@ RUN pip install --no-cache-dir uv
 # Dependencies resolve from pyproject alone, so this layer is cached until the
 # dependency list itself changes — not on every source edit.
 COPY pyproject.toml ./
+# [history] brings yfinance, which the worker needs: importing market history
+# runs as a worker job now rather than as a hand-run CLI, so the deployed
+# image must carry it or the job fails at runtime with ModuleNotFoundError
+# and nothing catches it until a user tries to import.
+#
 # No [dev]: pytest, ruff and their trees have no business in an image that
 # holds broker credentials and faces the internet.
-RUN uv pip install --system --no-cache "."
+RUN uv pip install --system --no-cache ".[history]"
 
 FROM python:3.12-slim AS runtime
 

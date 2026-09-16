@@ -5,6 +5,7 @@ import Shell from "@/components/Shell";
 import { Button, Card, PageHeader } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import { ImportHistoryPanel } from "@/components/backtest/ImportHistoryPanel";
 
 type Config = { symbol: string; interval: string; source: string; product: string; broker?: string };
 type Summary = { id: string; created_at: string; config: Config; total_return: string };
@@ -68,7 +69,9 @@ export default function BacktestsPage() {
   const points = values.map((value, i) => `${20 + i / Math.max(1, values.length - 1) * 760},${180 - (value-low) / (high-low || 1) * 160}`).join(" ");
 
   return <Shell>
-    <PageHeader title="Backtests" sub="Replay SMA crossover on stored NSE candles, with next-open fills and trading charges" />
+    <PageHeader title="Backtests" sub="Replay a strategy on stored candles, with next-open fills and trading charges" />
+
+    <div className="mb-4"><ImportHistoryPanel onImported={reload} /></div>
     <Card>
       <p className="mb-4 text-sm text-ink-dim">Import historical candles before running a replay. Simulator and Yahoo data stay separate. AI strategy replay is unavailable.</p>
       <form onSubmit={submit} className="grid gap-4 sm:grid-cols-3">
