@@ -5,11 +5,12 @@ position, emit signals. It never places orders directly — the runner routes
 signals through the risk engine and order pipeline."""
 
 from abc import ABC, abstractmethod
+from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel
 
-from app.domain.enums import OrderType, ProductType, SignalType
+from app.domain.enums import OptionRight, OrderType, ProductType, SignalType
 
 
 class StrategyContext(BaseModel):
@@ -53,6 +54,15 @@ class Signal(BaseModel):
 
     # For stop-loss orders.
     trigger_price: Decimal | None = None
+
+    # Derivatives contract, when the signal names one. A symbol alone does
+    # not identify an F&O contract -- Breeze lists 3,350 NIFTY contracts
+    # under that one code -- so a strategy trading options must say which.
+    # Falls back to the strategy's params, so a single-contract strategy can
+    # configure it once rather than repeating it on every signal.
+    expiry: date | None = None
+    strike: Decimal | None = None
+    right: OptionRight | None = None
 
 
 class StrategyBase(ABC):

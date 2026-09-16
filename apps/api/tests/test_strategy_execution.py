@@ -16,6 +16,7 @@ from app.adapters.base import FeatureNotSupportedError
 from app.domain.enums import (
     Broker,
     Exchange,
+    OptionRight,
     OrderSide,
     OrderType,
     ProductType,
@@ -32,9 +33,14 @@ def signal(**kw):
 
 
 def build(sig, *, broker=Broker.ICICI_BREEZE.value, params=None, last=Decimal("2800"),
-          side=OrderSide.BUY):
+          side=OrderSide.BUY, exchange=None):
+    # Exchange follows the params unless overridden: a test that configures an
+    # expiry is describing a derivatives order, and asserting an NFO default
+    # while passing NSE would test nothing.
+    if exchange is None:
+        exchange = Exchange.NFO if (params or {}).get("expiry") else Exchange.NSE
     return execution.build_order_request(
-        signal=sig, side=side, exchange=Exchange.NSE, broker=broker,
+        signal=sig, side=side, exchange=exchange, broker=broker,
         params=params or {}, last_price=last,
     )
 
@@ -170,3 +176,101 @@ def test_rounding_never_makes_a_marketable_order_unmarketable():
     )
     assert buy >= Decimal("2800")
     assert sell <= Decimal("2800")
+
+
+# ── derivatives contracts ────────────────────────────────────────────
+
+
+def test_a_strategy_can_configure_one_contract_in_its_params():
+    """A strategy that trades a single option should name it once, not on
+    every signal. Without this an F&O signal could not be expressed at all --
+    the adapter requires expiry, right and strike and refuses without them."""
+    from datetime import date
+
+    request = build(
+        signal(symbol="NIFTY"),
+        params={"expiry": "2026-09-29", "strike": "25000", "right": "call"},
+        last=Decimal("245"),
+    )
+    assert request.expiry == date(2026, 9, 29)
+    assert request.strike == Decimal("25000")
+    assert request.right is OptionRight.CALL
+
+
+def test_a_signal_can_pick_its_own_strike_per_trade():
+    """A strategy that rolls strikes decides per signal, and that must beat
+    whatever its params say."""
+    from datetime import date
+
+    request = build(
+        signal(symbol="NIFTY", expiry=date(2026, 10, 27), strike=Decimal("26000"),
+               right=OptionRight.PUT),
+        params={"expiry": "2026-09-29", "strike": "25000", "right": "call"},
+        last=Decimal("245"),
+    )
+    assert request.expiry == date(2026, 10, 27)
+    assert request.strike == Decimal("26000")
+    assert request.right is OptionRight.PUT
+
+
+def test_a_futures_strategy_need_not_spell_out_its_right():
+    """Breeze requires the field on every derivatives order and rejects an
+    empty one, so "no strike" has to become OTHERS rather than None."""
+    request = build(
+        signal(symbol="CNXBAN"), params={"expiry": "2026-09-29"},
+        last=Decimal("46230"),
+    )
+    assert request.right is OptionRight.OTHERS
+    assert request.strike is None
+
+
+def test_a_derivatives_order_defaults_to_carry_forward_not_a_cash_product():
+    """The per-broker defaults describe equities -- CNC for Breeze, MIS for
+    Kite. Either applied to an NFO order would ask for delivery of a
+    contract."""
+    request = build(
+        signal(symbol="NIFTY"), params={"expiry": "2026-09-29"},
+        last=Decimal("245"),
+    )
+    assert request.product is ProductType.NRML
+
+
+def test_an_equity_order_is_unaffected():
+    """The contract fields must stay absent for a cash order, or Breeze would
+    be sent an expiry for a share."""
+    request = build(signal(), last=Decimal("2800"))
+    assert request.expiry is None
+    assert request.strike is None
+    assert request.right is None
+    assert request.product is ProductType.CNC
+
+
+def test_an_unreadable_expiry_is_refused_rather_than_ignored():
+    """Silently dropping it would send the order as an equity trade, which
+    Breeze would reject with a much vaguer message."""
+    with pytest.raises(FeatureNotSupportedError, match="expiry date"):
+        build(signal(symbol="NIFTY"), params={"expiry": "next thursday"},
+              last=Decimal("245"))
+
+
+def test_the_right_accepts_the_vocabularies_people_actually_write():
+    """Breeze alone uses three different spellings across its own endpoints,
+    and an LLM-written strategy may use any of them."""
+    for written, expected in [
+        ("CE", OptionRight.CALL), ("call", OptionRight.CALL),
+        ("PE", OptionRight.PUT), ("put", OptionRight.PUT),
+        ("fut", OptionRight.OTHERS), ("XX", OptionRight.OTHERS),
+    ]:
+        request = build(
+            signal(symbol="NIFTY"),
+            params={"expiry": "2026-09-29", "strike": "25000", "right": written},
+            last=Decimal("245"),
+        )
+        assert request.right is expected, written
+
+
+def test_an_unrecognised_right_is_refused():
+    with pytest.raises(FeatureNotSupportedError, match="option right"):
+        build(signal(symbol="NIFTY"),
+              params={"expiry": "2026-09-29", "strike": "1", "right": "maybe"},
+              last=Decimal("245"))

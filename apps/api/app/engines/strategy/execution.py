@@ -23,11 +23,20 @@ something the broker cannot do is refused loudly rather than quietly given a
 different order.
 """
 
+from datetime import date, datetime
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
 from app.adapters.base import FeatureNotSupportedError
 from app.core.logging import get_logger
-from app.domain.enums import Broker, Exchange, OrderSide, OrderType, ProductType, Validity
+from app.domain.enums import (
+    Broker,
+    Exchange,
+    OptionRight,
+    OrderSide,
+    OrderType,
+    ProductType,
+    Validity,
+)
 from app.domain.models import OrderRequest
 
 logger = get_logger(__name__)
@@ -66,6 +75,10 @@ DEFAULT_LIMIT_BUFFER_PCT = Decimal("0.003")
 # instrument and well below a damaging one.
 MAX_LIMIT_BUFFER_PCT = Decimal("0.05")
 
+# Exchanges whose orders are derivatives contracts, where a cash-segment
+# product makes no sense.
+_DERIVATIVE_EXCHANGES = {Exchange.NFO, Exchange.BFO}
+
 # Indian equities quote in paise.
 _TICK = Decimal("0.05")
 
@@ -97,13 +110,58 @@ def marketable_limit(
     return _round_to_tick(last_price * factor, side=side)
 
 
-def resolve_product(signal, params: dict, broker: str) -> ProductType:
+def _parse_expiry(raw) -> "date | None":
+    """An expiry from strategy params, which arrive as JSON strings."""
+    if raw is None or isinstance(raw, date):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    raise FeatureNotSupportedError(
+        f"Could not read an expiry date from {raw!r}. Use YYYY-MM-DD."
+    )
+
+
+def _parse_right(raw) -> OptionRight | None:
+    if raw is None or isinstance(raw, OptionRight):
+        return raw
+    text = str(raw).strip().upper()
+    if not text:
+        return None
+    # Accept the vocabularies a user or an LLM is likely to write.
+    aliases = {
+        "CALL": OptionRight.CALL, "CE": OptionRight.CALL, "C": OptionRight.CALL,
+        "PUT": OptionRight.PUT, "PE": OptionRight.PUT, "P": OptionRight.PUT,
+        "OTHERS": OptionRight.OTHERS, "XX": OptionRight.OTHERS,
+        "FUT": OptionRight.OTHERS, "FUTURE": OptionRight.OTHERS,
+    }
+    right = aliases.get(text)
+    if right is None:
+        raise FeatureNotSupportedError(
+            f"{raw!r} is not a recognised option right; use call, put or others."
+        )
+    return right
+
+
+def resolve_product(
+    signal, params: dict, broker: str, exchange: Exchange | None = None
+) -> ProductType:
     """Which product this order should use."""
     if signal.product is not None:
         return signal.product
     configured = params.get("product")
     if configured:
         return ProductType(str(configured).upper())
+    # A derivatives order is never a cash-segment product. The per-broker
+    # defaults below describe equities -- CNC for Breeze, MIS for Kite -- and
+    # applying either to an NFO order would ask for delivery of a contract.
+    if exchange in _DERIVATIVE_EXCHANGES:
+        return ProductType.NRML
     return _DEFAULT_PRODUCT.get(broker, ProductType.MIS)
 
 
@@ -123,7 +181,7 @@ def build_order_request(
     order needs a price and inventing one would be the very substitution this
     module exists to make explicit.
     """
-    product = resolve_product(signal, params, broker)
+    product = resolve_product(signal, params, broker, exchange)
     requested = signal.order_type or OrderType(
         str(params.get("order_type", OrderType.MARKET.value)).upper()
     )
@@ -179,6 +237,21 @@ def build_order_request(
 
     validity = Validity(str(params.get("validity", Validity.DAY.value)).upper())
 
+    # Contract identity, signal first then params. A strategy that trades one
+    # contract configures it once; one that picks a strike per signal says so
+    # per signal. Without this an F&O signal could not be expressed at all --
+    # the adapter requires expiry/right/strike and would refuse.
+    expiry = signal.expiry or _parse_expiry(params.get("expiry"))
+    strike = signal.strike
+    if strike is None and params.get("strike") is not None:
+        strike = Decimal(str(params["strike"]))
+    right = signal.right or _parse_right(params.get("right"))
+    # A derivatives order needs a right even for a future, where Breeze wants
+    # "others" and rejects an empty value. Inferred from whether a strike was
+    # named rather than left None, so a futures strategy need not spell it.
+    if expiry is not None and right is None:
+        right = OptionRight.CALL if strike is not None else OptionRight.OTHERS
+
     return OrderRequest(
         symbol=signal.symbol,
         exchange=exchange,
@@ -189,4 +262,7 @@ def build_order_request(
         price=price,
         trigger_price=trigger_price,
         validity=validity,
+        expiry=expiry,
+        strike=strike,
+        right=right,
     )
