@@ -8,7 +8,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 import redis.asyncio as aioredis
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -132,8 +132,66 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "get_past_proposals",
+        "description": (
+            "Trades this analyst has proposed before, newest first, with "
+            "whether the user APPROVED or REJECTED each and the rationale "
+            "given at the time. Check this before proposing -- a rejection is "
+            "the user's judgement about this account, and re-proposing "
+            "something they already declined wastes their attention. An empty "
+            "list means no proposals have been made yet, NOT that past "
+            "proposals all succeeded."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Limit to one symbol. Optional.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum items, default 20, capped at 50.",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_trade_outcomes",
+        "description": (
+            "How approved proposals actually turned out: the order status, "
+            "the average fill price against the price proposed, and realized "
+            "P&L, which is per SYMBOL, not per trade -- it covers every "
+            "position in that symbol, so do not attribute it to one proposal. "
+            "Use it to check whether your own "
+            "past reasoning held up. IMPORTANT: a handful of trades is not "
+            "evidence that an approach works -- outcomes over a few trades "
+            "are dominated by noise, and this account may have almost no "
+            "history yet. Report what happened; do not infer a strategy is "
+            "reliable from a small sample."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Limit to one symbol. Optional.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum items, default 20, capped at 50.",
+                },
+            },
+        },
+    },
+    {
         "name": "get_strategies",
-        "description": "The user's configured strategies and their status.",
+        "description": (
+            "The user's configured strategies, their status, and how many "
+            "orders each has actually placed. A RUNNING strategy with zero "
+            "orders has a condition that has not triggered -- from the status "
+            "alone that is indistinguishable from one that is working."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -446,6 +504,96 @@ async def run_tool(
             }
         )
 
+    if name == "get_past_proposals":
+        limit = max(1, min(int(args.get("limit") or 20), 50))
+        query = (
+            select(AIProposal)
+            .where(AIProposal.broker_account_id == account.id)
+            .order_by(AIProposal.created_at.desc())
+            .limit(limit)
+        )
+        symbol = str(args.get("symbol") or "").strip().upper()
+        if symbol:
+            query = query.where(AIProposal.symbol == symbol)
+        proposals = (await db.execute(query)).scalars().all()
+        return json.dumps(
+            {
+                "proposals": [
+                    {
+                        "symbol": p.symbol,
+                        "side": p.side,
+                        "quantity": p.quantity,
+                        "status": p.status,
+                        "rationale": p.rationale,
+                        "proposed_at": p.created_at.isoformat(),
+                        "decided_at": p.decided_at.isoformat() if p.decided_at else None,
+                    }
+                    for p in proposals
+                ],
+                "note": (
+                    "An empty list means nothing has been proposed yet, not "
+                    "that past proposals succeeded."
+                ),
+            }
+        )
+
+    if name == "get_trade_outcomes":
+        limit = max(1, min(int(args.get("limit") or 20), 50))
+        # Only approved proposals have an order, and only an order has an
+        # outcome. A rejected proposal has no result to report -- what the
+        # user declined is in get_past_proposals, where it belongs.
+        query = (
+            select(AIProposal, Order)
+            .join(Order, AIProposal.order_id == Order.id)
+            .where(AIProposal.broker_account_id == account.id)
+            .order_by(AIProposal.created_at.desc())
+            .limit(limit)
+        )
+        symbol = str(args.get("symbol") or "").strip().upper()
+        if symbol:
+            query = query.where(AIProposal.symbol == symbol)
+        rows = (await db.execute(query)).all()
+
+        # Realized P&L is per position, not per order: a broker reports the
+        # result of a round trip, and attributing it to one leg would count
+        # the same rupees twice.
+        realized: dict[str, str] = {}
+        if rows:
+            positions = (
+                await db.execute(
+                    select(Position).where(
+                        Position.broker_account_id == account.id,
+                        Position.symbol.in_({p.symbol for p, _ in rows}),
+                    )
+                )
+            ).scalars()
+            realized = {p.symbol: _num(p.realized_pnl) for p in positions}
+
+        return json.dumps(
+            {
+                "outcomes": [
+                    {
+                        "symbol": proposal.symbol,
+                        "side": proposal.side,
+                        "quantity": proposal.quantity,
+                        "proposed_price": _num(proposal.limit_price),
+                        "order_status": order.status,
+                        "filled_quantity": order.filled_quantity,
+                        "average_fill_price": _num(order.average_fill_price),
+                        "realized_pnl_on_symbol": realized.get(proposal.symbol),
+                        "proposed_at": proposal.created_at.isoformat(),
+                    }
+                    for proposal, order in rows
+                ],
+                "note": (
+                    "Realized P&L is per SYMBOL, not per trade, so it "
+                    "reflects every position in that symbol rather than this "
+                    "proposal alone. A small number of outcomes is noise, not "
+                    "evidence that an approach works."
+                ),
+            }
+        )
+
     if name == "get_orders":
         result = await db.execute(
             select(Order)
@@ -525,12 +673,53 @@ async def run_tool(
         return json.dumps(out)
 
     if name == "get_strategies":
-        result = await db.execute(select(Strategy).where(Strategy.user_id == user_id))
+        strategies = (
+            (await db.execute(select(Strategy).where(Strategy.user_id == user_id)))
+            .scalars()
+            .all()
+        )
+        # Order counts per strategy, so the analyst can tell a strategy that
+        # has traded from one that has been RUNNING for a week without firing
+        # -- which usually means a condition that never triggers, and looks
+        # identical to a working strategy from the status alone.
+        counts: dict[uuid.UUID, dict] = {}
+        if strategies:
+            rows = (
+                await db.execute(
+                    select(
+                        Order.strategy_id,
+                        func.count(Order.id),
+                        func.sum(Order.filled_quantity),
+                    )
+                    .where(Order.strategy_id.in_([s.id for s in strategies]))
+                    .group_by(Order.strategy_id)
+                )
+            ).all()
+            counts = {
+                strategy_id: {"orders": placed, "filled_quantity": int(filled or 0)}
+                for strategy_id, placed, filled in rows
+            }
         return json.dumps(
-            [
-                {"name": s.name, "kind": s.kind, "symbols": s.symbols, "status": s.status}
-                for s in result.scalars()
-            ]
+            {
+                "strategies": [
+                    {
+                        "name": s.name,
+                        "kind": s.kind,
+                        "symbols": s.symbols,
+                        "status": s.status,
+                        "orders_placed": counts.get(s.id, {}).get("orders", 0),
+                        "filled_quantity": counts.get(s.id, {}).get(
+                            "filled_quantity", 0
+                        ),
+                    }
+                    for s in strategies
+                ],
+                "note": (
+                    "orders_placed counts every order this strategy has ever "
+                    "placed. Zero on a RUNNING strategy means its condition "
+                    "has not triggered, not that it is broken."
+                ),
+            }
         )
 
     if name == "get_risk_rules":
