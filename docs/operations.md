@@ -179,8 +179,13 @@ git pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml build
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 make migrate
-curl -fsS localhost:8000/api/v1/readyz | jq
+curl -fsS https://tickortrade.online/api/v1/readyz | jq
 ```
+
+The API port is NOT published to the host — Caddy reaches it over the compose
+network — so `curl localhost:8000` on the droplet connects to nothing and says
+"Failed to connect". That is the absence of a published port, not a sick app.
+Check through the public URL, or from inside the container.
 
 Migrations run after the new image is up. Check `/readyz` before walking away
 — a worker that fails to start is otherwise silent.
@@ -192,7 +197,7 @@ Migrations run after the new image is up. Check `/readyz` before walking away
 **Orders rejected, reads fine.** Check `egress_ip_mismatch` first. It is the
 cause that looks like the other two.
 
-**Nothing is filling.** `curl localhost:8000/api/v1/readyz`. If `worker` is
+**Nothing is filling.** `curl https://tickortrade.online/api/v1/readyz`. If `worker` is
 false, `docker compose logs worker`.
 
 **Everything is slow, or connections are refused.** You may be over the
