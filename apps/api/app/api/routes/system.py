@@ -213,7 +213,7 @@ def _reset_egress_cache() -> None:
     _egress_cache.update({"at": None, "ip": None})
 
 
-@router.get("/egress-ip")
+@router.get("/system/egress-ip")
 async def egress_ip(user: VerifiedUser):
     """This host's outbound address, and whether it matches the registered one.
 

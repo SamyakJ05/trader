@@ -20,6 +20,7 @@ export type AccountAction =
   | "sync"
   | "sync-instruments"
   | "diagnostics"
+  | "reset-paper"
   | "set-token"
   | "toggle-live"
   | "delete";
@@ -134,6 +135,13 @@ export function BrokerConnectionCard({
         {tokenBrokers && (
           <Button size="sm" variant="primary" disabled={busy} onClick={() => onAction("set-token")}>
             Set token
+          </Button>
+        )}
+        {/* Paper only: the endpoint refuses a real broker account, and a
+            button that always errors is worse than no button. */}
+        {account.broker === "paper" && (
+          <Button size="sm" disabled={busy} onClick={() => onAction("reset-paper")}>
+            Reset simulator
           </Button>
         )}
         <Button size="sm" disabled={busy} onClick={() => onAction("diagnostics")}>

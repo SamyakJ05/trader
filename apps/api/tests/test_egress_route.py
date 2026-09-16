@@ -94,3 +94,16 @@ async def test_the_lookup_is_cached(monkeypatch):
     for _ in range(5):
         await system.egress_ip(user=None)
     assert len(calls) == 1
+
+
+def test_the_route_paths_match_what_the_frontend_calls():
+    """system.py declares full paths per route rather than using a router
+    prefix, so a new route that omits /system is mounted somewhere the UI does
+    not call. That is a 404 at runtime and nothing catches it -- /egress-ip
+    shipped that way and the banner would never have loaded.
+    """
+    paths = {r.path for r in system.router.routes}
+    assert "/system/egress-ip" in paths
+    # The paper reset genuinely has no /system prefix; the UI must match it
+    # rather than assume one.
+    assert "/paper/accounts/{account_id}/reset" in paths

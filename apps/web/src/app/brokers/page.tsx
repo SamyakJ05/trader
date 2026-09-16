@@ -130,6 +130,27 @@ export default function BrokersPage() {
           push("success", `${res.instruments} NSE instruments synced`);
           break;
         }
+        case "reset-paper": {
+          // Names what is destroyed and what survives. "Reset" alone reads as
+          // harmless, and this cancels working orders and deletes every
+          // position and holding.
+          if (
+            !window.confirm(
+              `Reset “${account.label}” to ₹10,00,000?\n\n` +
+                "Cancels working orders, deletes all positions and holdings, " +
+                "and restores the starting cash.\n\n" +
+                "Order and fill history is kept. This cannot be undone.",
+            )
+          ) {
+            break;
+          }
+          const res = await api<{ cash: string }>(
+            `/paper/accounts/${account.id}/reset`,
+            { method: "POST" },
+          );
+          push("success", `Simulator reset — cash restored to ₹${res.cash}`);
+          break;
+        }
         case "diagnostics":
           setDiagnosing(account);
           break;
