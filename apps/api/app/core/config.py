@@ -46,7 +46,21 @@ class Settings(BaseSettings):
     # The outbound IP registered with the broker for transactional requests.
     # Logged and compared at startup so a mismatch surfaces before an order
     # is rejected for it. Purely diagnostic — it gates nothing.
+    # One or more addresses, comma-separated. ICICI register a Primary and a
+    # Secondary, and either may be the one an order actually leaves from --
+    # a droplet with a reserved IP receives on one address and egresses from
+    # another, which is not obvious until an order is rejected for it.
+    #
+    # Accepting both means the check keeps working through a planned primary
+    # change, and ICICI limit IP updates to once a week, so a window where
+    # only the old address is registered is normal rather than an error.
     broker_static_ip: str | None = None
+
+    @property
+    def broker_static_ips(self) -> list[str]:
+        """Every address the broker has whitelisted, in order."""
+        raw = self.broker_static_ip or ""
+        return [part.strip() for part in raw.split(",") if part.strip()]
     market_hours_enforced: bool = True
 
     # AI trading. Env key is the zero-config fallback; per-user provider

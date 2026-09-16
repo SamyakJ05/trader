@@ -26,6 +26,8 @@ def clear_cache():
 
 
 def patch(monkeypatch, *, detected, expected, live=False):
+    """`expected` may be a single address or a comma-separated pair, matching
+    what ICICI register (a Primary and a Secondary)."""
     # Reset inside the patch too, not only in the fixture. The cache is
     # module-global: whether a previous test left an entry depends on
     # collection order, which differs between a local run and CI -- and that
@@ -39,7 +41,13 @@ def patch(monkeypatch, *, detected, expected, live=False):
     monkeypatch.setattr(
         system,
         "get_settings",
-        lambda: SimpleNamespace(broker_static_ip=expected, enable_live_trading=live),
+        lambda: SimpleNamespace(
+            broker_static_ip=expected,
+            broker_static_ips=(
+                [p.strip() for p in expected.split(",") if p.strip()] if expected else []
+            ),
+            enable_live_trading=live,
+        ),
     )
 
 
@@ -89,7 +97,11 @@ async def test_the_lookup_is_cached(monkeypatch):
     monkeypatch.setattr(
         system,
         "get_settings",
-        lambda: SimpleNamespace(broker_static_ip="1.2.3.4", enable_live_trading=False),
+        lambda: SimpleNamespace(
+            broker_static_ip="1.2.3.4",
+            broker_static_ips=["1.2.3.4"],
+            enable_live_trading=False,
+        ),
     )
     for _ in range(5):
         await system.egress_ip(user=None)
@@ -107,3 +119,31 @@ def test_the_route_paths_match_what_the_frontend_calls():
     # The paper reset genuinely has no /system prefix; the UI must match it
     # rather than assume one.
     assert "/paper/accounts/{account_id}/reset" in paths
+
+
+# ── two registered addresses ─────────────────────────────────────────
+
+
+async def test_either_registered_address_counts_as_a_match(monkeypatch):
+    """ICICI whitelist a Primary and a Secondary. Which one an order leaves
+    from is a property of the host's routing -- a droplet with a reserved IP
+    receives on one address and egresses from another -- so both must pass."""
+    patch(monkeypatch, detected="206.189.128.192",
+          expected="68.183.244.153, 206.189.128.192")
+    assert (await system.egress_ip(user=None))["status"] == "match"
+
+    system._reset_egress_cache()
+    patch(monkeypatch, detected="68.183.244.153",
+          expected="68.183.244.153, 206.189.128.192")
+    assert (await system.egress_ip(user=None))["status"] == "match"
+
+
+async def test_an_address_on_neither_slot_is_still_a_mismatch(monkeypatch):
+    """Accepting a list must not become accepting anything."""
+    patch(monkeypatch, detected="9.9.9.9",
+          expected="68.183.244.153, 206.189.128.192")
+    result = await system.egress_ip(user=None)
+    assert result["status"] == "mismatch"
+    # The message names both, so the operator can see which slots are filled.
+    assert "68.183.244.153" in result["expected"]
+    assert "206.189.128.192" in result["expected"]

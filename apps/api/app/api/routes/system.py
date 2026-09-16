@@ -241,9 +241,10 @@ async def egress_ip(user: VerifiedUser):
         _egress_cache["at"] = now
 
     detected = _egress_cache["ip"]
-    expected = get_settings().broker_static_ip
+    expected_list = get_settings().broker_static_ips
+    expected = ", ".join(expected_list) if expected_list else None
 
-    if not expected:
+    if not expected_list:
         status_value = "unconfigured"
     elif detected is None:
         # The echo services are unreachable, which says nothing about whether
@@ -251,7 +252,10 @@ async def egress_ip(user: VerifiedUser):
         # a red banner over someone else's outage would train the operator to
         # ignore it.
         status_value = "unknown"
-    elif detected == expected:
+    elif detected in expected_list:
+        # Any registered address is a pass. ICICI whitelist two, and which one
+        # an order leaves from is a property of the host's routing, not of
+        # which they call primary.
         status_value = "match"
     else:
         status_value = "mismatch"

@@ -4,6 +4,8 @@ import { useApi } from "@/lib/useApi";
 
 type Egress = {
   detected: string | null;
+  // One address, or several comma-separated: brokers typically register a
+  // primary and a secondary, and either may be the one orders leave from.
   expected: string | null;
   status: "match" | "mismatch" | "unknown" | "unconfigured";
   live_trading_enabled: boolean;
@@ -35,8 +37,8 @@ export function EgressBanner() {
   if (data.status === "match") {
     return (
       <p className="mb-4 text-xs text-ink-faint">
-        Outbound IP <span className="num">{data.detected}</span> matches the
-        address registered with the broker.
+        Outbound IP <span className="num">{data.detected}</span> is registered
+        with the broker.
       </p>
     );
   }
@@ -57,13 +59,14 @@ export function EgressBanner() {
         Outbound IP does not match the address registered with your broker.
       </p>
       <p className="mt-1 text-xs">
-        Leaving from <span className="num">{data.detected}</span>, registered{" "}
+        Leaving from <span className="num">{data.detected}</span>; registered:{" "}
         <span className="num">{data.expected}</span>.{" "}
         {data.live_trading_enabled
           ? "Live orders will be rejected while reads keep working, and the rejection will not say why."
           : "Live trading is off, so nothing is failing yet — but orders would be rejected if it were enabled."}{" "}
-        Update the registered IP with the broker, or set BROKER_STATIC_IP to
-        this host&rsquo;s actual address if it is the one that moved.
+        Register this address with the broker — most allow a primary and a
+        secondary — and add it to BROKER_STATIC_IP (comma-separated) so both
+        are tracked.
       </p>
     </div>
   );
