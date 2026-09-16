@@ -27,7 +27,12 @@ from app.domain.enums import (
     AuditEventType,
     Broker,
     Environment,
+    Exchange,
+    OrderSide,
     OrderStatus,
+    OrderType,
+    ProductType,
+    Validity,
 )
 from app.domain.models import OrderRequest
 from app.engines.paper import engine as paper_engine
@@ -304,18 +309,54 @@ async def modify_order(
         await db.refresh(order)
     if not OrderStatus(order.status).is_working and order.status != OrderStatus.ACCEPTED.value:
         raise OrderServiceError(f"Cannot modify order in status {order.status}")
-    if order.environment != Environment.PAPER.value:
-        # TODO(live-modify): route through adapter.modify_order once any live
-        # adapter is verified.
-        raise OrderServiceError("Live order modification not supported yet")
-
     old = {"price": str(order.price), "quantity": order.quantity}
-    if price is not None:
-        order.price = price
-    if quantity is not None:
-        if quantity < (order.filled_quantity or 0):
-            raise OrderServiceError("Quantity below already-filled amount")
-        order.quantity = quantity
+
+    # Validate before sending anything: a quantity below what is already
+    # filled is incoherent at any broker, and finding that out from a rejected
+    # modify would leave the local row and the broker disagreeing.
+    if quantity is not None and quantity < (order.filled_quantity or 0):
+        raise OrderServiceError("Quantity below already-filled amount")
+
+    new_price = price if price is not None else order.price
+    new_quantity = quantity if quantity is not None else order.quantity
+
+    if order.environment != Environment.PAPER.value:
+        # Live modify used to raise "not supported yet" outright, which made
+        # adapter.modify_order unreachable. Amending a resting order is how a
+        # limit that has stopped being marketable gets repriced; without it
+        # the only options are to leave it or cancel and replace, and a
+        # cancel-replace loses queue priority and can cross in between.
+        #
+        # Mirrors cancel_order: the broker is the source of truth, so it is
+        # told first and the local row is updated only on acknowledgement. The
+        # reverse order would leave our record claiming a price the broker
+        # never accepted.
+        account = await db.get(BrokerAccount, order.broker_account_id)
+        if account is None:
+            raise OrderServiceError("Broker account missing")
+        refusal = _live_gate(account)
+        if refusal:
+            raise OrderServiceError(refusal)
+
+        request = OrderRequest(
+            symbol=order.symbol,
+            exchange=Exchange(order.exchange),
+            side=OrderSide(order.side),
+            order_type=OrderType(order.order_type),
+            product=ProductType(order.product),
+            quantity=new_quantity,
+            price=new_price,
+            trigger_price=order.trigger_price,
+            validity=Validity(order.validity),
+        )
+        adapter = get_trading_adapter(account)
+        try:
+            await adapter.modify_order(order.broker_order_id or "", request)
+        except (BrokerError, FeatureNotSupportedError) as e:
+            raise OrderServiceError(str(e)) from e
+
+    order.price = new_price
+    order.quantity = new_quantity
     await audit.emit(
         db,
         AuditEventType.ORDER_STATE_CHANGED,
