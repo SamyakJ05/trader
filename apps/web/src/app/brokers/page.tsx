@@ -6,6 +6,7 @@ import { Button, EmptyState, PageHeader, Skeleton } from "@/components/ui";
 import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
+import { EgressBanner } from "@/components/broker/EgressBanner";
 import { BrokerAccount, BrokerCapabilities } from "@/lib/types";
 import {
   AccountAction,
@@ -170,6 +171,8 @@ export default function BrokersPage() {
 
   return (
     <Shell>
+      <EgressBanner />
+
       <PageHeader
         title="Broker Connections"
         sub="Connect, verify and sync broker accounts — paper simulator or real brokers"

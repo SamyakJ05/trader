@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 
 from app.core.config import get_settings
 from app.core.deps import DbSession, VerifiedUser
+from app.core.egress import detect_egress_ip
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.db.models import Strategy
@@ -193,3 +194,57 @@ async def reset_paper_account(account_id: uuid.UUID, user: VerifiedUser, db: DbS
     await paper_engine.reset_account(db, account)
     await db.commit()
     return {"status": "reset", "cash": str(paper_engine.INITIAL_PAPER_CASH)}
+
+
+# ── egress IP ────────────────────────────────────────────────────────
+
+# The lookup leaves the host to a third-party echo service, so a UI that polls
+# this must not repeat it on every render. The address changes only when the
+# host does -- a droplet rebuild, a reserved IP detaching, a NAT change -- so
+# a few minutes of staleness costs nothing and a cache miss is the only path
+# that touches the network.
+_EGRESS_TTL_SECONDS = 300
+_egress_cache: dict = {"at": 0.0, "ip": None}
+
+
+@router.get("/egress-ip")
+async def egress_ip(user: VerifiedUser):
+    """This host's outbound address, and whether it matches the registered one.
+
+    SEBI's algo framework requires order requests to originate from an IP the
+    broker has whitelisted. Orders from anywhere else are rejected while reads,
+    market data and the websocket keep working perfectly -- so the platform
+    looks healthy and only trading is broken, and the rejection does not say
+    why. Suspicion falls on the session or the payload first, which is where
+    the hours go.
+
+    Reported here so a mismatch after a droplet rebuild is visible before
+    market open rather than discovered by a failed order during it.
+    """
+    now = time.monotonic()
+    if now - _egress_cache["at"] > _EGRESS_TTL_SECONDS:
+        _egress_cache["ip"] = await detect_egress_ip()
+        _egress_cache["at"] = now
+
+    detected = _egress_cache["ip"]
+    expected = get_settings().broker_static_ip
+
+    if not expected:
+        status_value = "unconfigured"
+    elif detected is None:
+        # The echo services are unreachable, which says nothing about whether
+        # the address is right. Reported as unknown rather than as a mismatch:
+        # a red banner over someone else's outage would train the operator to
+        # ignore it.
+        status_value = "unknown"
+    elif detected == expected:
+        status_value = "match"
+    else:
+        status_value = "mismatch"
+
+    return {
+        "detected": detected,
+        "expected": expected,
+        "status": status_value,
+        "live_trading_enabled": get_settings().enable_live_trading,
+    }
