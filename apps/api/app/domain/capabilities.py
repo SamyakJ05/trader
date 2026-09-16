@@ -76,11 +76,19 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         instruments_dump=True,
         websocket_ticks=True,
         order_postbacks=True,
-        amo_orders=True,
-        bracket_gtt=True,
+        # Kite supports AMO; this adapter cannot send one. Every order path
+        # hardcodes variety=regular, and OrderRequest has no variety field to
+        # ask for anything else. An AMO sent as regular is rejected outside
+        # market hours and executes immediately inside them -- a different
+        # order from the one intended -- so the flag must not advertise it.
+        amo_orders=False,
+        # Same: Kite supports both, this adapter implements neither.
+        bracket_gtt=False,
         exchanges=["NSE", "BSE", "NFO", "BFO", "MCX", "CDS"],
         notes="Adapter scaffolded against documented Kite Connect v3 REST endpoints. "
-        "NOT verified against a live account. WebSocket ticks not implemented.",
+        "NOT verified against a live account. WebSocket ticks ARE implemented "
+        "(see ticker.py and tick_feed) but likewise unverified; AMO, bracket "
+        "and GTT orders are not implemented at all.",
     ),
     Broker.GROWW: BrokerCapabilities(
         broker=Broker.GROWW,

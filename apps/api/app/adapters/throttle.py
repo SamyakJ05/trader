@@ -129,16 +129,26 @@ class ThrottleTimeout(Exception):
     """Raised when waiting for a token would exceed the caller's budget."""
 
 
-# Kite's documented limits. Quotes are allowed a higher rate than everything
-# else, and order placement is stricter still, so they get their own buckets
-# rather than sharing one conservative number.
+# Kite's documented per-second limits, from their rate-limit table.
+#
+# The previous values had this backwards in both directions, on the stated
+# belief that "quotes are allowed a higher rate than everything else". Quote
+# is the MOST restricted endpoint Kite publishes, at 1/s -- it was set to 10,
+# ten times over, which is the one that bites first because quote polling is
+# the highest-frequency call a strategy makes. Meanwhile "default" was 3/s
+# against a documented 10/s for all other endpoints, needlessly throttling
+# /user and /portfolio reads.
+#
+# Exceeding these earns an app-wide block, so an over-permissive quote bucket
+# takes order placement down with it.
 #
 # These are per Kite app. Verify against current docs before live use — they
 # are not published as a machine-readable contract and have changed before.
 KITE_LIMITS = {
-    "quote": 10.0,
+    "quote": 1.0,
+    "historical": 3.0,
     "order": 10.0,
-    "default": 3.0,
+    "default": 10.0,
 }
 
 

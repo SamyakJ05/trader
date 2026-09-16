@@ -3,7 +3,11 @@
 STATUS: SCAFFOLD. Wired against documented Kite Connect v3 REST endpoints
 (https://kite.trade/docs/connect/v3/) but NOT verified against a live
 account. Do not enable live trading until every method here has been
-exercised with real credentials. WebSocket ticks are not implemented.
+exercised with real credentials. WebSocket ticks ARE implemented, in
+ticker.py and tick_feed, and are unverified in the same way.
+
+Every order path pins variety=regular. AMO, bracket, cover and iceberg
+orders are not supported here, and the capability matrix says so.
 
 Auth model (Kite Connect v3):
 1. User visits login_url -> Zerodha login -> redirect to our callback with request_token.
@@ -27,9 +31,11 @@ from app.adapters.base import (
     BrokerError,
     FeatureNotSupportedError,
     SessionExpiredError,
+    as_int,
 )
 from app.adapters.throttle import kite_limiter
 from app.adapters.zerodha.ticker import KiteTickFeed
+from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.core.security import decrypt_secret
 from app.domain.enums import (
@@ -51,6 +57,8 @@ from app.domain.models import (
     PlaceOrderResult,
     Tick,
 )
+
+logger = get_logger(__name__)
 
 API_BASE = "https://api.kite.trade"
 LOGIN_BASE = "https://kite.zerodha.com/connect/login"
@@ -134,9 +142,17 @@ class ZerodhaAdapter(BrokerAdapter):
         }
 
     def _throttle_category(self, path: str) -> str:
-        """Kite allows different rates per endpoint family."""
-        if path.startswith("/quote") or path.startswith("/instruments"):
+        """Kite allows different rates per endpoint family.
+
+        /instruments used to share the quote bucket, which is backwards:
+        quote is Kite's tightest limit at 1/s, and the instruments dump is a
+        once-a-day CSV that would eat a budget the strategy loop needs every
+        second. It belongs with everything else at the default rate.
+        """
+        if path.startswith("/quote"):
             return "quote"
+        if path.startswith("/instruments/historical"):
+            return "historical"
         if path.startswith("/orders"):
             return "order"
         return "default"
@@ -165,9 +181,30 @@ class ZerodhaAdapter(BrokerAdapter):
             )
         if resp.status_code == 403:
             raise SessionExpiredError("Kite returned 403 — daily token likely expired")
-        body = resp.json()
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            # Kite's documented 502/503/504 come from the edge as HTML, and
+            # json() then raises JSONDecodeError -- not a BrokerError, so it
+            # escaped every handler in the service layer as an unhandled 500
+            # instead of a broker failure the account status could record.
+            raise BrokerError(
+                f"Kite returned a non-JSON response (HTTP {resp.status_code})",
+                retryable=resp.status_code >= 500,
+            ) from exc
         if body.get("status") == "error":
-            raise BrokerError(body.get("message", "Kite error"), raw=body)
+            # error_type is Kite's authoritative discriminator and was being
+            # discarded. TokenException is documented as arriving with a 403,
+            # which the branch above catches -- but only when the status code
+            # survives intact. Reading the field means an expired daily token
+            # is recognised as one however it arrives, so the account is
+            # marked SESSION_EXPIRED and the operator is prompted to log in,
+            # rather than ERROR, which reads as "the broker is broken" and
+            # silently drops orders through a trading day.
+            message = body.get("message", "Kite error")
+            if body.get("error_type") == "TokenException":
+                raise SessionExpiredError(f"Kite session expired: {message}")
+            raise BrokerError(f"{message} [{body.get('error_type', 'unknown')}]", raw=body)
         return body.get("data", {})
 
     # ── account data ─────────────────────────────────────────────────
@@ -182,10 +219,18 @@ class ZerodhaAdapter(BrokerAdapter):
         )
 
     async def get_funds(self) -> Funds:
+        # `net`, not `available.cash`. Kite documents available.cash as "raw
+        # cash balance" -- it excludes collateral, intraday_payin and
+        # adhoc_margin, and does NOT subtract utilised.debits, so it
+        # under-reports for a pledged account and over-reports whenever
+        # anything is deployed. `net` is the segment's "net cash balance
+        # available for trading", which is the number Kite's own dashboard
+        # shows as available margin. Same shape as Breeze's
+        # total_bank_balance: a plausible name for the wrong figure.
         data = await self._request("GET", "/user/margins/equity")
         return Funds(
-            available_cash=Decimal(str(data.get("available", {}).get("cash", 0))),
-            margin_used=Decimal(str(data.get("utilised", {}).get("debits", 0))),
+            available_cash=Decimal(str(data.get("net", 0) or 0)),
+            margin_used=Decimal(str(data.get("utilised", {}).get("debits", 0) or 0)),
             raw=data,
         )
 
@@ -204,35 +249,71 @@ class ZerodhaAdapter(BrokerAdapter):
         ]
 
     async def get_positions(self) -> list[BrokerPosition]:
+        # `net` is the right list (carry-forward inclusive), but `realised`
+        # and `unrealised` alongside it are Kite's INTRADAY figures. For a
+        # position held overnight they describe today's slice, not the
+        # position -- `pnl` is the overall number. Using the intraday one
+        # understates P&L on anything carried, which matters if a daily-loss
+        # rule ever reads broker positions.
+        #
+        # Enum casts are guarded: MTF is a Kite product our ProductType
+        # cannot express, and one MTF position used to raise ValueError
+        # inside the comprehension and hide every other position.
         data = await self._request("GET", "/portfolio/positions")
-        return [
-            BrokerPosition(
-                symbol=p["tradingsymbol"],
-                exchange=Exchange(p.get("exchange", "NSE")),
-                product=ProductType(p.get("product", "MIS")),
-                quantity=p.get("quantity", 0),
-                average_price=Decimal(str(p.get("average_price", 0))),
-                last_price=Decimal(str(p.get("last_price", 0))),
-                realized_pnl=Decimal(str(p.get("realised", 0))),
-                unrealized_pnl=Decimal(str(p.get("unrealised", 0))),
+        out: list[BrokerPosition] = []
+        for p in data.get("net", []):
+            try:
+                exchange = Exchange(str(p.get("exchange") or "NSE").upper())
+                product = ProductType(str(p.get("product") or "MIS").upper())
+            except ValueError:
+                logger.warning(
+                    "kite_position_unmappable",
+                    symbol=p.get("tradingsymbol"),
+                    exchange=p.get("exchange"),
+                    product=p.get("product"),
+                )
+                continue
+            out.append(
+                BrokerPosition(
+                    symbol=p["tradingsymbol"],
+                    exchange=exchange,
+                    product=product,
+                    quantity=as_int(p.get("quantity")),
+                    average_price=Decimal(str(p.get("average_price", 0) or 0)),
+                    last_price=Decimal(str(p.get("last_price", 0) or 0)),
+                    realized_pnl=Decimal(str(p.get("realised", 0) or 0)),
+                    unrealized_pnl=Decimal(str(p.get("pnl", 0) or 0)),
+                )
             )
-            for p in data.get("net", [])
-        ]
+        return out
 
     async def get_orders(self) -> list[BrokerOrder]:
         data = await self._request("GET", "/orders")
         return [self._map_order(o) for o in data]
 
     def _map_order(self, o: dict) -> BrokerOrder:
+        # Kite's order_type list is not closed, and defaulting an unrecognised
+        # one to MARKET claims a resting limit or stop order is a market order
+        # -- in the platform's own model of an order that is live at the
+        # broker. That is the "limit becomes market" substitution, arriving
+        # through reconciliation rather than placement, and it feeds fill
+        # logic and position state. LIMIT is the conservative default: it
+        # describes an order that rests rather than one that executes.
+        raw_type = o.get("order_type")
+        order_type = next(
+            (k for k, v in _ORDER_TYPE_MAP.items() if v == raw_type), None
+        )
+        if order_type is None:
+            logger.warning(
+                "kite_order_unknown_type", order_id=o.get("order_id"), order_type=raw_type
+            )
+            order_type = OrderType.LIMIT
         return BrokerOrder(
             broker_order_id=str(o["order_id"]),
             symbol=o["tradingsymbol"],
             exchange=Exchange(o.get("exchange", "NSE")),
             side=OrderSide(o.get("transaction_type", "BUY")),
-            order_type=next(
-                (k for k, v in _ORDER_TYPE_MAP.items() if v == o.get("order_type")),
-                OrderType.MARKET,
-            ),
+            order_type=order_type,
             product=ProductType(o.get("product", "MIS")),
             quantity=o.get("quantity", 0),
             filled_quantity=o.get("filled_quantity", 0),
@@ -271,8 +352,15 @@ class ZerodhaAdapter(BrokerAdapter):
             payload["trigger_price"] = str(request.trigger_price)
 
         data = await self._request("POST", "/orders/regular", data=payload)
+        # str(None) is "None", a perfectly valid-looking string. Without this
+        # guard an order whose fate is unknown was recorded as SUBMITTED with
+        # a poison id, and every later modify/cancel/reconcile targeted
+        # /orders/regular/None.
+        order_id = data.get("order_id")
+        if not order_id:
+            raise BrokerError("Kite accepted the order without returning an id", raw=data)
         return PlaceOrderResult(
-            broker_order_id=str(data.get("order_id")),
+            broker_order_id=str(order_id),
             status=OrderStatus.SUBMITTED,
             raw=data,
         )
@@ -288,8 +376,11 @@ class ZerodhaAdapter(BrokerAdapter):
         if request.trigger_price is not None:
             payload["trigger_price"] = str(request.trigger_price)
         data = await self._request("PUT", f"/orders/regular/{broker_order_id}", data=payload)
+        order_id = data.get("order_id")
+        if not order_id:
+            raise BrokerError("Kite accepted the modify without returning an id", raw=data)
         return PlaceOrderResult(
-            broker_order_id=str(data.get("order_id")), status=OrderStatus.SUBMITTED, raw=data
+            broker_order_id=str(order_id), status=OrderStatus.SUBMITTED, raw=data
         )
 
     async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
