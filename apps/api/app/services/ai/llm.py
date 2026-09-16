@@ -352,6 +352,19 @@ def _client_from_row(row: AISettings) -> LLMClient | None:
         return None
     creds = json.loads(decrypt_secret(row.credentials_enc))
     if row.provider == "bedrock":
+        # Claude on Bedrock keeps the Messages API, which supports its tool
+        # use natively. Everything else AWS hosts -- Nova, Llama, Mistral,
+        # Cohere -- speaks Converse instead, so the model id decides.
+        from app.services.ai.bedrock_converse import BedrockConverseLLM, uses_converse
+
+        if uses_converse(row.model):
+            return BedrockConverseLLM(
+                model=row.model,
+                api_key=creds.get("api_key"),
+                aws_access_key_id=creds.get("aws_access_key_id"),
+                aws_secret_access_key=creds.get("aws_secret_access_key"),
+                region=creds.get("region"),
+            )
         return AnthropicLLM(
             model=row.model,
             provider="bedrock",
@@ -392,10 +405,16 @@ async def resolve_llm(db: AsyncSession, user_id: uuid_mod.UUID) -> LLMClient | N
     # provider without configuring anything here.
     bedrock_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
     if bedrock_token:
+        from app.services.ai.bedrock_converse import BedrockConverseLLM, uses_converse
+
+        model = os.environ.get("BEDROCK_MODEL") or DEFAULT_MODELS["bedrock"]
+        region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+        if uses_converse(model):
+            return BedrockConverseLLM(model=model, api_key=bedrock_token, region=region)
         return AnthropicLLM(
-            model=DEFAULT_MODELS["bedrock"],
+            model=model,
             provider="bedrock",
             api_key=bedrock_token,
-            region=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+            region=region,
         )
     return None

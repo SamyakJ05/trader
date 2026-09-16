@@ -169,7 +169,9 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
             <p className="mt-1 text-xs text-ink-faint">
               From Bedrock → API keys. Use this <em>or</em> the IAM pair below,
               not both. A key here is simplest; IAM is for accounts that
-              require it.
+              require it. Any model your account has access to works —
+              Claude, Nova, Llama, Mistral, Cohere — put its exact Model ID
+              above.
             </p>
           )}
         </div>
