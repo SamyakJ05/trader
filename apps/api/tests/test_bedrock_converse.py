@@ -29,11 +29,36 @@ from app.services.ai.llm import LLMError
     ("mistral.mistral-large-2407-v1:0", True),
     ("cohere.command-r-plus-v1:0", True),
     ("ai21.jamba-1-5-large-v1:0", True),
+    # OpenAI's open-weight models are on Bedrock too. These routed to the
+    # Anthropic SDK before openai. was recognised, and failed on a request
+    # shape they do not speak.
+    ("openai.gpt-oss-120b-1:0", True),
+    ("us.openai.gpt-oss-20b-1:0", True),
 ])
 def test_the_model_id_decides_which_client_answers(model, expected):
     """Matched by prefix rather than an exact list: AWS versions ids heavily
     and adds models faster than a hardcoded set would track."""
     assert uses_converse(model) is expected
+
+
+def test_an_unknown_vendor_goes_to_converse():
+    """The rule is "not Claude", not "one of these vendors". A model AWS adds
+    tomorrow must route to Converse rather than to the Anthropic SDK, where
+    it would fail on a request shape it does not speak -- which is exactly
+    what happened to openai.* while the check was a vendor list."""
+    assert uses_converse("somevendor.some-model-v1:0") is True
+    assert uses_converse("us.somevendor.some-model-v1:0") is True
+
+
+def test_every_claude_form_stays_on_the_messages_api():
+    """Claude's tool use is native there, and the analyst depends on it."""
+    for model in (
+        "anthropic.claude-opus-5",
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "eu.anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "apac.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    ):
+        assert uses_converse(model) is False, model
 
 
 # ── message translation, where this breaks silently ──────────────────

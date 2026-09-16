@@ -37,22 +37,46 @@ CONVERSE_PREFIXES = (
     "mistral.",      # Mistral, Mixtral
     "cohere.",       # Command
     "ai21.",         # Jamba
+    "openai.",       # GPT-6/GPT-5.6 and the gpt-oss line, hosted by AWS
     "deepseek.",
+    "qwen.",
+    "xai.",
+    "minimax.",
+    "moonshot.",
+    "zai.",
+    "nvidia.",
+    "twelvelabs.",
     "writer.",
     "luma.",
     "stability.",
 )
 
+# Anything NOT Claude goes through Converse, prefix list or not. The list
+# above is documentation of what AWS hosts today; this is the rule.
+#
+# A new vendor prefix appearing in Bedrock would otherwise route to the
+# Anthropic SDK and fail on a request shape that model does not speak --
+# which is what happened to openai.* before it was added here, and would
+# happen again to the next one.
+_ANTHROPIC_PREFIXES = ("anthropic.",)
+_REGION_PREFIXES = ("us.", "eu.", "ap.", "apac.")
+
 
 def uses_converse(model: str) -> bool:
     """Whether this Bedrock model id needs Converse rather than the Anthropic
-    SDK. Claude ids (anthropic.*, and region-prefixed us.anthropic.* style
-    inference profiles) keep the Messages API, which supports Claude's tool
-    use natively."""
-    bare = model.split(".", 1)[-1] if model[:3] in ("us.", "eu.", "ap.") else model
-    if bare.startswith("anthropic.") or model.startswith("anthropic."):
-        return False
-    return model.startswith(CONVERSE_PREFIXES) or bare.startswith(CONVERSE_PREFIXES)
+    SDK.
+
+    Only Claude keeps the Messages API, which supports its tool use natively.
+    Everything else goes to Converse -- stated as "not Claude" rather than as
+    a list of known vendors, so a model AWS adds tomorrow routes correctly
+    instead of failing against a request shape it does not speak.
+    """
+    bare = model
+    for prefix in _REGION_PREFIXES:
+        if model.startswith(prefix):
+            bare = model[len(prefix):]
+            break
+    return not bare.startswith(_ANTHROPIC_PREFIXES)
 
 
 class BedrockConverseLLM:
