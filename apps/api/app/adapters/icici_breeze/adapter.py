@@ -116,10 +116,56 @@ _UNSUPPORTED_PRODUCT = {
 _ORDER_TYPE_MAP = {
     OrderType.LIMIT: "limit",
     OrderType.SL: "stoploss",
-    OrderType.SL_M: "stoploss",
+    # SL_M is deliberately absent. Breeze has one "stoploss" type, which
+    # takes both a trigger and a limit price, so mapping SL_M here would
+    # send a stop-loss LIMIT when a stop-loss MARKET was asked for -- the
+    # same substitution this adapter already refuses for plain MARKET
+    # orders. _order_body raises FeatureNotSupportedError instead.
 }
 
 _VALIDITY_MAP = {"DAY": "day", "IOC": "ioc"}
+
+# Breeze's product_type as it comes BACK on a position, which is not the same
+# vocabulary as the product names it accepts when placing one. Their docs show
+# "Options" and "Future" capitalised on positions; lowercased here before
+# lookup. "cash" is ambiguous between delivery and intraday -- Breeze does not
+# distinguish -- and CNC is the conservative reading (see get_positions).
+_POSITION_PRODUCT_MAP = {
+    "cash": ProductType.CNC,
+    "futures": ProductType.NRML,
+    "future": ProductType.NRML,
+    "options": ProductType.NRML,
+    "option": ProductType.NRML,
+    "fno": ProductType.NRML,
+}
+
+# Breeze's order_type as it comes BACK, which is not the vocabulary it
+# accepts. "Stoploss" has no OrderType member -- OrderType("STOPLOSS") raises
+# -- and it cannot be told apart from a stop-loss market from the response
+# alone, so it reads as SL (the limit variant), matching what this adapter is
+# willing to send.
+_RESPONSE_ORDER_TYPE_MAP = {
+    "limit": OrderType.LIMIT,
+    "market": OrderType.MARKET,
+    "stoploss": OrderType.SL,
+    "stop loss": OrderType.SL,
+    "sl": OrderType.SL,
+}
+
+
+def _as_int(value) -> int:
+    """Broker quantities arrive as strings, sometimes as "1.0" or "-".
+
+    int("1.0") and int("-") both raise, and these run inside list
+    comprehensions where one bad row would take down an entire holdings or
+    positions fetch rather than skipping a single line.
+    """
+    if value in (None, "", "-"):
+        return 0
+    try:
+        return int(Decimal(str(value)))
+    except (ArithmeticError, ValueError):
+        return 0
 
 
 class BreezeAdapter(BrokerAdapter):
@@ -305,54 +351,118 @@ class BreezeAdapter(BrokerAdapter):
         )
 
     async def get_holdings(self) -> list[Holding]:
+        # /dematholdings returns NO cost basis -- confirmed against the docs
+        # and against a real account, where every row came back without an
+        # average_price field at all. Reading one produced Decimal("0") for
+        # every holding, which is not "unknown" but a claim that the stock
+        # was free, making unrealized P&L equal the full notional. None says
+        # what is actually true.
+        #
+        # `quantity` is the total on record; `demat_avail_quantity` is what
+        # can be sold today, with the rest pledged, blocked or allocated.
+        # The docs' own sample has quantity=1 against demat_avail_quantity=0.
+        # Sizing a sell off the total is the same total-vs-free trap as
+        # total_bank_balance was for funds.
         data = await self._request("GET", "/dematholdings")
         rows = data if isinstance(data, list) else []
         return [
             Holding(
                 symbol=h.get("stock_code", ""),
                 exchange=Exchange.NSE,
-                quantity=int(h.get("quantity", 0) or 0),
-                average_price=Decimal(str(h.get("average_price", 0) or 0)),
+                quantity=_as_int(h.get("demat_avail_quantity")),
+                total_quantity=_as_int(h.get("quantity")),
+                average_price=None,
             )
             for h in rows
         ]
 
     async def get_positions(self) -> list[BrokerPosition]:
+        # product was hardcoded to MIS for every row, discarding Breeze's own
+        # product_type. A CNC delivery holding came back labelled intraday,
+        # and anything that squares off MIS positions before the close would
+        # have liquidated a position meant to be held.
+        #
+        # The mapping is imperfect and deliberately conservative: Breeze's
+        # "cash" covers both delivery and intraday equity, and it does not
+        # say which. CNC is the safe reading -- treating a real intraday
+        # position as delivery leaves it open, while the reverse sells
+        # something the operator meant to keep.
         data = await self._request("GET", "/portfoliopositions")
         rows = data if isinstance(data, list) else []
-        return [
-            BrokerPosition(
-                symbol=p.get("stock_code", ""),
-                exchange=Exchange(p.get("exchange_code", "NSE").upper()),
-                product=ProductType.MIS,
-                quantity=int(p.get("quantity", 0) or 0),
-                average_price=Decimal(str(p.get("average_price", 0) or 0)),
+        out: list[BrokerPosition] = []
+        for p in rows:
+            try:
+                exchange = Exchange(str(p.get("exchange_code") or "NSE").upper())
+            except ValueError:
+                # One unrecognised segment must not blind the platform to
+                # every other position. Skip the row, say so, keep going.
+                logger.warning(
+                    "breeze_position_unknown_exchange",
+                    exchange=p.get("exchange_code"),
+                    symbol=p.get("stock_code"),
+                )
+                continue
+            out.append(
+                BrokerPosition(
+                    symbol=p.get("stock_code", ""),
+                    exchange=exchange,
+                    product=_POSITION_PRODUCT_MAP.get(
+                        str(p.get("product_type") or "").lower(), ProductType.CNC
+                    ),
+                    quantity=_as_int(p.get("quantity")),
+                    average_price=Decimal(str(p.get("average_price", 0) or 0)),
+                )
             )
-            for p in rows
-        ]
+        return out
 
     async def get_orders(self) -> list[BrokerOrder]:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+        # The trading day is an IST day. Deriving it from UTC put the window
+        # on the previous calendar date for everything before 05:30 IST, so a
+        # pre-open sync asked for yesterday's book.
+        today = datetime.now(IST).strftime("%Y-%m-%dT00:00:00.000Z")
         data = await self._request(
             "GET",
             "/order",
             {"exchange_code": "NSE", "from_date": today, "to_date": today},
         )
         rows = data if isinstance(data, list) else []
-        return [
-            BrokerOrder(
-                broker_order_id=str(o.get("order_id", "")),
-                symbol=o.get("stock_code", ""),
-                exchange=Exchange(o.get("exchange_code", "NSE").upper()),
-                side=OrderSide(o.get("action", "buy").upper()),
-                order_type=OrderType(o.get("order_type", "market").upper()),
-                product=ProductType.MIS,
-                quantity=int(o.get("quantity", 0) or 0),
-                status=_STATUS_MAP.get(o.get("status", ""), OrderStatus.OPEN),
-                raw=o,
+        out: list[BrokerOrder] = []
+        for o in rows:
+            # Every enum cast here is on a broker-supplied string, inside what
+            # used to be a list comprehension: one unrecognised value raised
+            # ValueError and took down the whole order-book sync rather than
+            # skipping a row. Breeze returns order_type "Stoploss", which has
+            # no OrderType member at all, so a single resting stop-loss order
+            # was enough to blind the platform to every other order.
+            try:
+                exchange = Exchange(str(o.get("exchange_code") or "NSE").upper())
+                side = OrderSide(str(o.get("action") or "buy").upper())
+            except ValueError:
+                logger.warning(
+                    "breeze_order_unparsable",
+                    order_id=o.get("order_id"),
+                    exchange=o.get("exchange_code"),
+                    action=o.get("action"),
+                )
+                continue
+            out.append(
+                BrokerOrder(
+                    broker_order_id=str(o.get("order_id", "")),
+                    symbol=o.get("stock_code", ""),
+                    exchange=exchange,
+                    side=side,
+                    order_type=_RESPONSE_ORDER_TYPE_MAP.get(
+                        str(o.get("order_type") or "").lower(), OrderType.LIMIT
+                    ),
+                    product=_POSITION_PRODUCT_MAP.get(
+                        str(o.get("product_type") or "").lower(), ProductType.CNC
+                    ),
+                    quantity=_as_int(o.get("quantity")),
+                    status=_STATUS_MAP.get(o.get("status", ""), OrderStatus.OPEN),
+                    raw=o,
+                )
             )
-            for o in rows
-        ]
+        return out
 
     # ── trading: blocked until verified against real account ────────
 
@@ -371,9 +481,10 @@ class BreezeAdapter(BrokerAdapter):
         if order_type is None:
             raise FeatureNotSupportedError(
                 f"Breeze does not accept {request.order_type.value} orders. "
-                "Its API takes only limit and stoploss; a market order would "
-                "have to be sent as an aggressive limit, which is a different "
-                "order from the one requested."
+                "Its API takes only limit and stoploss. A market order would "
+                "have to be sent as an aggressive limit, and a stop-loss "
+                "market as a stop-loss limit — both are different orders "
+                "from the one requested."
             )
         if request.price is None:
             raise BrokerError("Breeze requires a price: every order is a limit order")
@@ -462,6 +573,18 @@ class BreezeAdapter(BrokerAdapter):
         )
 
     async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
+        # exchange_code is required on DELETE /order and hardcoded to NSE
+        # here, because the adapter interface passes only a broker order id
+        # and this adapter keeps no per-order exchange memory. An NFO order
+        # therefore cannot be cancelled through this method -- the one
+        # situation where cancelling matters most.
+        #
+        # Not fixed here: carrying the exchange would change
+        # BrokerAdapter.cancel_order's signature across all four adapters and
+        # its call site. It is also not currently reachable -- _order_body
+        # omits the expiry/strike/right fields Breeze requires for
+        # derivatives, so no F&O order can be placed through this adapter to
+        # begin with. Both belong in the same change, before F&O is enabled.
         try:
             data = await self._request(
                 "DELETE",

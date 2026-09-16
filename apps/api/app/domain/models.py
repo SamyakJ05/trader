@@ -60,8 +60,16 @@ class Funds(BaseModel):
 class Holding(BaseModel):
     symbol: str
     exchange: Exchange
+    # The sellable figure, not the total on record. Brokers report several
+    # quantities per holding -- total, pledged, blocked, T+1, free -- and the
+    # difference is what can actually be sold today. Adapters must map the
+    # free one here; `total_quantity` carries the rest of the picture.
     quantity: int
-    average_price: Decimal
+    total_quantity: int | None = None
+    # None means the broker does not report a cost basis, which is the case
+    # for ICICI Breeze's /dematholdings. Zero would be a lie that makes
+    # unrealized P&L equal the full notional.
+    average_price: Decimal | None = None
     last_price: Decimal | None = None
     pnl: Decimal | None = None
 

@@ -8,8 +8,11 @@ import { BrokerAccount, Position } from "@/lib/types";
 interface BrokerHolding {
   symbol: string;
   exchange: string;
+  /** Sellable today — pledged and blocked stock excluded. */
   quantity: number;
-  average_price: string;
+  total_quantity?: number | null;
+  /** null when the broker reports no cost basis (ICICI Breeze does not). */
+  average_price?: string | null;
 }
 
 interface BrokerHoldingsResponse {
@@ -37,7 +40,8 @@ function BrokerHoldingsCard({ account }: { account: BrokerAccount }) {
               <tr>
                 <Th>Symbol</Th>
                 <Th>Exchange</Th>
-                <Th right>Quantity</Th>
+                <Th right>Sellable</Th>
+                <Th right>Total</Th>
                 <Th right>Average</Th>
               </tr>
             </thead>
@@ -47,7 +51,20 @@ function BrokerHoldingsCard({ account }: { account: BrokerAccount }) {
                   <Td className="font-medium">{h.symbol}</Td>
                   <Td className="text-ink-dim">{h.exchange}</Td>
                   <Td right>{h.quantity}</Td>
-                  <Td right>{Number(h.average_price).toFixed(2)}</Td>
+                  {/* Differs from sellable when stock is pledged or blocked. */}
+                  <Td right className="text-ink-dim">
+                    {h.total_quantity ?? h.quantity}
+                  </Td>
+                  {/* Breeze reports no cost basis at all. Number(null) would
+                      render 0.00, which reads as "free" rather than
+                      "unknown" — the exact lie the backend stopped telling. */}
+                  <Td right>
+                    {h.average_price == null ? (
+                      <span className="text-ink-faint">—</span>
+                    ) : (
+                      Number(h.average_price).toFixed(2)
+                    )}
+                  </Td>
                 </tr>
               ))}
             </tbody>
@@ -58,8 +75,9 @@ function BrokerHoldingsCard({ account }: { account: BrokerAccount }) {
               verification), so nothing here is fabricated to fill the gap. */}
           <p className="mt-3 text-xs text-ink-faint">
             As of broker sync{data.as_of ? ` at ${new Date(data.as_of).toLocaleString()}` : ""}.
-            Quantity and average price only — no live quote feed for this account yet, so
-            no LTP or unrealized P&L is shown here.
+            Sellable excludes pledged and blocked stock. A dash means the broker reports
+            no cost basis — ICICI Breeze does not send one. No live quote feed for this
+            account yet, so no LTP or unrealized P&L either.
           </p>
         </div>
       ) : (

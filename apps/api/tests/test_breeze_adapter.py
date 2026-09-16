@@ -396,3 +396,135 @@ async def test_a_read_failure_does_not_blame_the_ip(monkeypatch):
     with pytest.raises(BrokerError) as exc:
         await a.get_funds()
     assert "static IP" not in str(exc.value)
+
+
+# ── response parsing: fields that are not what they look like ────────
+# Every bug in this block was live against a real account or confirmed
+# against Breeze's docs. The shared shape: a plausible field name that
+# means something else, or an enum cast on a broker string inside a list
+# comprehension, where one bad row takes down the whole fetch.
+
+
+async def test_holdings_report_the_sellable_quantity_not_the_total(monkeypatch):
+    """quantity is the total on record; demat_avail_quantity is what can be
+    sold today. The docs' own sample has quantity=1 against
+    demat_avail_quantity=0 -- pledged stock counted as sellable."""
+    a = adapter(monkeypatch)
+
+    async def fake_request(self, method, path, body=None):
+        return [{
+            "stock_code": "RELIND",
+            "quantity": "10",
+            "demat_avail_quantity": "4",
+            "blocked_quantity": "6",
+        }]
+
+    monkeypatch.setattr(BreezeAdapter, "_request", fake_request)
+    holdings = await a.get_holdings()
+    assert holdings[0].quantity == 4, "sizing a sell off the total oversells"
+    assert holdings[0].total_quantity == 10
+
+
+async def test_holdings_do_not_invent_a_cost_basis(monkeypatch):
+    """/dematholdings carries no average price at all. Reading one yielded
+    Decimal(0) for every row -- not 'unknown' but a claim the stock was
+    free, making unrealized P&L the full notional. Confirmed live: all 15
+    holdings on a real account came back this way."""
+    a = adapter(monkeypatch)
+
+    async def fake_request(self, method, path, body=None):
+        return [{"stock_code": "RELIND", "quantity": "10", "demat_avail_quantity": "10"}]
+
+    monkeypatch.setattr(BreezeAdapter, "_request", fake_request)
+    assert (await a.get_holdings())[0].average_price is None
+
+
+async def test_a_holding_with_an_unparsable_quantity_does_not_break_the_fetch(monkeypatch):
+    a = adapter(monkeypatch)
+
+    async def fake_request(self, method, path, body=None):
+        return [
+            {"stock_code": "A", "demat_avail_quantity": "-"},
+            {"stock_code": "B", "demat_avail_quantity": "5.0"},
+            {"stock_code": "C", "demat_avail_quantity": "3"},
+        ]
+
+    monkeypatch.setattr(BreezeAdapter, "_request", fake_request)
+    holdings = await a.get_holdings()
+    assert [h.quantity for h in holdings] == [0, 5, 3]
+
+
+async def test_positions_carry_breezes_own_product_not_a_hardcoded_mis(monkeypatch):
+    """product was hardcoded MIS for every row. A delivery holding labelled
+    intraday is one square-off-before-close away from being liquidated."""
+    a = adapter(monkeypatch)
+
+    async def fake_request(self, method, path, body=None):
+        return [
+            {"stock_code": "RELIND", "exchange_code": "NSE",
+             "product_type": "cash", "quantity": "10", "average_price": "100"},
+            {"stock_code": "NIFTY", "exchange_code": "NFO",
+             "product_type": "Futures", "quantity": "50", "average_price": "200"},
+        ]
+
+    monkeypatch.setattr(BreezeAdapter, "_request", fake_request)
+    positions = await a.get_positions()
+    assert positions[0].product is ProductType.CNC
+    assert positions[1].product is ProductType.NRML
+
+
+async def test_one_unknown_exchange_does_not_hide_every_other_position(monkeypatch):
+    a = adapter(monkeypatch)
+
+    async def fake_request(self, method, path, body=None):
+        # "NSE_IDX" is not an Exchange member. Breeze's segment strings are
+        # not a closed set, and an unrecognised one used to raise ValueError
+        # inside the comprehension.
+        return [
+            {"stock_code": "A", "exchange_code": "NSE_IDX", "quantity": "1", "average_price": "1"},
+            {"stock_code": "B", "exchange_code": "NSE", "quantity": "2", "average_price": "2"},
+        ]
+
+    monkeypatch.setattr(BreezeAdapter, "_request", fake_request)
+    positions = await a.get_positions()
+    assert [p.symbol for p in positions] == ["B"]
+
+
+async def test_a_resting_stoploss_does_not_take_down_the_order_book(monkeypatch):
+    """Breeze returns order_type 'Stoploss'. OrderType('STOPLOSS') raises --
+    one resting stop-loss order blinded the platform to every other order."""
+    a = adapter(monkeypatch)
+
+    async def fake_request(self, method, path, body=None):
+        return [
+            {"order_id": "1", "stock_code": "A", "exchange_code": "NSE",
+             "action": "Buy", "order_type": "Stoploss", "quantity": "5", "status": "Ordered"},
+            {"order_id": "2", "stock_code": "B", "exchange_code": "NSE",
+             "action": "Sell", "order_type": "Limit", "quantity": "3", "status": "Ordered"},
+        ]
+
+    monkeypatch.setattr(BreezeAdapter, "_request", fake_request)
+    orders = await a.get_orders()
+    assert [o.broker_order_id for o in orders] == ["1", "2"]
+    assert orders[0].order_type is OrderType.SL
+    assert orders[1].order_type is OrderType.LIMIT
+
+
+def test_a_stop_loss_market_order_is_refused_rather_than_sent_as_a_limit(monkeypatch):
+    """SL and SL_M both mapped to Breeze's single "stoploss" type, which takes
+    a trigger AND a limit price -- so a stop-loss MARKET went out as a
+    stop-loss LIMIT, the same silent substitution this adapter already
+    refuses for plain market orders.
+
+    OrderRequest requires a trigger price on SL_M, so the order is built
+    validly here: the refusal under test is the adapter's, not the model's.
+    """
+    with pytest.raises(FeatureNotSupportedError, match="stop-loss"):
+        adapter(monkeypatch)._order_body(
+            order(
+                order_type=OrderType.SL_M,
+                price=Decimal("100"),
+                trigger_price=Decimal("99"),
+            ),
+            "cli-1",
+        )
