@@ -204,7 +204,13 @@ async def reset_paper_account(account_id: uuid.UUID, user: VerifiedUser, db: DbS
 # a few minutes of staleness costs nothing and a cache miss is the only path
 # that touches the network.
 _EGRESS_TTL_SECONDS = 300
-_egress_cache: dict = {"at": 0.0, "ip": None}
+_egress_cache: dict = {"at": None, "ip": None}
+
+
+def _reset_egress_cache() -> None:
+    """Drop the cached lookup. Used by tests, which must not depend on
+    whichever test ran before them having left it empty."""
+    _egress_cache.update({"at": None, "ip": None})
 
 
 @router.get("/egress-ip")
@@ -221,8 +227,12 @@ async def egress_ip(user: VerifiedUser):
     Reported here so a mismatch after a droplet rebuild is visible before
     market open rather than discovered by a failed order during it.
     """
+    # `at` is None until the first lookup. Using 0.0 as the sentinel made a
+    # populated cache indistinguishable from an empty one after any reset,
+    # which is how a stale None survived into the next caller.
     now = time.monotonic()
-    if now - _egress_cache["at"] > _EGRESS_TTL_SECONDS:
+    cached_at = _egress_cache["at"]
+    if cached_at is None or now - cached_at > _EGRESS_TTL_SECONDS:
         _egress_cache["ip"] = await detect_egress_ip()
         _egress_cache["at"] = now
 

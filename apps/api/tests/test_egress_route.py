@@ -16,12 +16,22 @@ from app.api.routes import system
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    system._egress_cache.update({"at": 0.0, "ip": None})
+    """The cache is module-global, so a test that leaves an entry behind
+    changes the next test's answer. This failed in CI and not locally purely
+    on test ordering, which is the kind of shared state worth removing rather
+    than working around."""
+    system._reset_egress_cache()
     yield
-    system._egress_cache.update({"at": 0.0, "ip": None})
+    system._reset_egress_cache()
 
 
 def patch(monkeypatch, *, detected, expected, live=False):
+    # Reset inside the patch too, not only in the fixture. The cache is
+    # module-global: whether a previous test left an entry depends on
+    # collection order, which differs between a local run and CI -- and that
+    # difference is exactly what made this suite pass here and fail there.
+    system._reset_egress_cache()
+
     async def fake_detect(*a, **kw):
         return detected
 
@@ -74,6 +84,7 @@ async def test_the_lookup_is_cached(monkeypatch):
         calls.append(1)
         return "1.2.3.4"
 
+    system._reset_egress_cache()
     monkeypatch.setattr(system, "detect_egress_ip", counting)
     monkeypatch.setattr(
         system,

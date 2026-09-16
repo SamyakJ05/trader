@@ -7,6 +7,7 @@ import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { EgressBanner } from "@/components/broker/EgressBanner";
+import { DiagnosticsModal } from "@/components/broker/DiagnosticsModal";
 import { BrokerAccount, BrokerCapabilities } from "@/lib/types";
 import {
   AccountAction,
@@ -26,6 +27,7 @@ export default function BrokersPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [tokenFor, setTokenFor] = useState<BrokerAccount | null>(null);
+  const [diagnosing, setDiagnosing] = useState<BrokerAccount | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [pendingApiSession, setPendingApiSession] = useState<string | null>(null);
 
@@ -128,6 +130,9 @@ export default function BrokersPage() {
           push("success", `${res.instruments} NSE instruments synced`);
           break;
         }
+        case "diagnostics":
+          setDiagnosing(account);
+          break;
         case "set-token":
           setTokenError(null);
           setTokenFor(account);
@@ -230,6 +235,7 @@ export default function BrokersPage() {
         busy={false}
         initialToken={tokenFor?.broker === "icici_breeze" ? (pendingApiSession ?? undefined) : undefined}
       />
+      <DiagnosticsModal account={diagnosing} onClose={() => setDiagnosing(null)} />
     </Shell>
   );
 }

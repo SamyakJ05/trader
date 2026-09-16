@@ -250,6 +250,26 @@ async def sync_instruments_route(
     return {"exchange": body.exchange.upper(), "instruments": written}
 
 
+@router.post("/accounts/{account_id}/diagnostics")
+async def account_diagnostics(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
+    """Exercise every broker read and report what each returned.
+
+    The verification playbooks otherwise require an async REPL to call
+    get_holdings, get_positions and get_orders by hand and to check that
+    strategy symbols resolve to instrument tokens. That is a reading task --
+    comparing our numbers against the broker's own dashboard -- repeated per
+    broker and after every adapter change.
+
+    Read-only, and deliberately does NOT stamp read_verified_at: /verify is
+    the gate and must stay the only thing that can promote an account's
+    verification state.
+    """
+    account = await broker_service.get_account(db, user.id, account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
+    return await broker_service.diagnostics(db, account)
+
+
 @router.post("/accounts/{account_id}/disconnect", response_model=AccountOut)
 async def disconnect_account(account_id: uuid.UUID, user: VerifiedUser, db: DbSession):
     account = await broker_service.get_account(db, user.id, account_id)

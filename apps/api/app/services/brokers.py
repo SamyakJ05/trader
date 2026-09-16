@@ -240,3 +240,154 @@ async def sync_snapshots(db: AsyncSession, account: BrokerAccount) -> dict:
     )
     await db.commit()
     return synced
+
+
+async def diagnostics(db: AsyncSession, account: BrokerAccount) -> dict:
+    """Exercise every read path and report what each returned.
+
+    verify_read_access covers profile and funds, which is what read_verified_at
+    means and all it should mean. But the verification playbooks then ask the
+    operator to open an async REPL and call get_holdings, get_positions and
+    get_orders by hand, and to check that the strategy's symbols actually
+    resolve to instrument tokens. That is a reading task -- compare our numbers
+    against the broker's own dashboard -- not a shell task, and it is repeated
+    per broker and after every adapter change.
+
+    Deliberately read-only and deliberately NOT stamping read_verified_at: a
+    panel the operator can run at any time must not be able to promote an
+    account's verification state as a side effect.
+
+    Every call is caught individually. One unsupported or failing read must
+    still leave the others visible, because the useful signal is usually which
+    ones differ.
+    """
+    adapter = get_adapter(account)
+    reads: dict[str, dict] = {}
+
+    async def run(name: str, call, summarise):
+        try:
+            value = await call()
+        except FeatureNotSupportedError as exc:
+            reads[name] = {"status": "unsupported", "detail": str(exc)}
+        except SessionExpiredError as exc:
+            reads[name] = {"status": "session_expired", "detail": str(exc)}
+        except BrokerError as exc:
+            reads[name] = {"status": "error", "detail": str(exc)}
+        except Exception as exc:
+            # Broad on purpose: a diagnostic that raises tells the operator
+            # nothing, and an adapter bug is exactly what this is for finding.
+            reads[name] = {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
+        else:
+            reads[name] = {"status": "ok", **summarise(value)}
+
+    await run(
+        "profile",
+        adapter.get_profile,
+        lambda p: {"client_id": p.broker_client_id or None, "name": p.name},
+    )
+    await run(
+        "funds",
+        adapter.get_funds,
+        lambda f: {
+            "available_cash": str(f.available_cash),
+            "margin_used": str(f.margin_used) if f.margin_used is not None else None,
+        },
+    )
+    await run(
+        "holdings",
+        adapter.get_holdings,
+        lambda rows: {
+            "count": len(rows),
+            # The sellable figure and the total differ when stock is pledged
+            # or locked, and sizing a sell off the total is the mistake this
+            # makes visible.
+            "sample": [
+                {
+                    "symbol": h.symbol,
+                    "quantity": h.quantity,
+                    "total_quantity": h.total_quantity,
+                    "average_price": str(h.average_price)
+                    if h.average_price is not None
+                    else None,
+                }
+                for h in rows[:5]
+            ],
+        },
+    )
+    await run(
+        "positions",
+        adapter.get_positions,
+        lambda rows: {
+            "count": len(rows),
+            "sample": [
+                {
+                    "symbol": p.symbol,
+                    "product": p.product.value,
+                    "quantity": p.quantity,
+                    "average_price": str(p.average_price),
+                }
+                for p in rows[:5]
+            ],
+        },
+    )
+    await run(
+        "orders",
+        adapter.get_orders,
+        lambda rows: {
+            "count": len(rows),
+            "sample": [
+                {
+                    "broker_order_id": o.broker_order_id,
+                    "symbol": o.symbol,
+                    "status": o.status.value,
+                    "quantity": o.quantity,
+                    "filled_quantity": o.filled_quantity,
+                }
+                for o in rows[:5]
+            ],
+        },
+    )
+
+    return {
+        "broker": account.broker,
+        "environment": account.environment,
+        "status": account.status,
+        "reads": reads,
+        "instrument_coverage": await _instrument_coverage(db, account),
+    }
+
+
+async def _instrument_coverage(db: AsyncSession, account: BrokerAccount) -> dict:
+    """Which of this account's strategy symbols resolve to a broker token.
+
+    The tick stream subscribes by token, so a symbol with none receives no
+    prices -- and the runner then refuses to trade it live for want of a fresh
+    quote. Nothing errors; the strategy simply sits silent. The playbook flags
+    this as the failure that is hardest to notice, which is exactly why it
+    belongs in a panel rather than a REPL session.
+    """
+    from app.db.models import Strategy
+    from app.services import instruments as instrument_service
+
+    result = await db.execute(
+        select(Strategy.symbols).where(
+            Strategy.broker_account_id == account.id,
+            Strategy.status.in_(["RUNNING", "DRAFT"]),
+        )
+    )
+    symbols: set[str] = set()
+    for row in result.scalars():
+        symbols.update(row or [])
+    if not symbols:
+        return {"symbols": 0, "resolved": 0, "missing": []}
+
+    tokens = await instrument_service.token_map(
+        db, broker=account.broker, symbols=sorted(symbols)
+    )
+    resolved = set(tokens.values())
+    missing = sorted(symbols - resolved)
+    return {
+        "symbols": len(symbols),
+        "resolved": len(symbols) - len(missing),
+        "missing": missing,
+    }

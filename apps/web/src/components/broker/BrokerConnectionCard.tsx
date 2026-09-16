@@ -19,6 +19,7 @@ export type AccountAction =
   | "verify"
   | "sync"
   | "sync-instruments"
+  | "diagnostics"
   | "set-token"
   | "toggle-live"
   | "delete";
@@ -135,6 +136,9 @@ export function BrokerConnectionCard({
             Set token
           </Button>
         )}
+        <Button size="sm" disabled={busy} onClick={() => onAction("diagnostics")}>
+          Diagnostics
+        </Button>
         <Button size="sm" disabled={busy} onClick={() => onAction("verify")}>
           Verify read access
         </Button>
