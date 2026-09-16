@@ -4,6 +4,7 @@ import { Button, Card, Pill } from "../ui";
 import { BrokerAccount, BrokerCapabilities } from "@/lib/types";
 import {
   AdapterStatusBadge,
+  AutoExecuteChip,
   CapabilityBadges,
   EnvironmentPill,
   LiveEnabledChip,
@@ -23,6 +24,7 @@ export type AccountAction =
   | "reset-paper"
   | "set-token"
   | "toggle-live"
+  | "toggle-auto-execute"
   | "delete";
 
 // Brokers like Breeze have no programmatic session refresh — the session
@@ -93,6 +95,7 @@ export function BrokerConnectionCard({
             <ReadPathChip readVerifiedAt={account.read_verified_at} />
             <TradePathChip account={account} />
             <LiveEnabledChip liveEnabled={account.live_enabled} />
+            <AutoExecuteChip autoExecute={account.auto_execute} />
             <SyncStatusChip lastSyncAt={account.last_sync_at} />
           </div>
         </div>
@@ -172,6 +175,14 @@ export function BrokerConnectionCard({
             </Button>
           </>
         )}
+        <Button
+          size="sm"
+          variant={account.auto_execute ? "danger" : "ghost"}
+          disabled={busy}
+          onClick={() => onAction("toggle-auto-execute")}
+        >
+          {account.auto_execute ? "Stop auto-trading" : "Auto-trade"}
+        </Button>
         <Button size="sm" variant="danger" disabled={busy} onClick={() => onAction("delete")}>
           Delete
         </Button>

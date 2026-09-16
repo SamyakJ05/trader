@@ -142,6 +142,15 @@ class BrokerAccount(Base):
     status: Mapped[str] = mapped_column(String(32), default="disconnected")
     status_message: Mapped[str | None] = mapped_column(Text)
     live_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Lets the AI analyst place orders on this account with no human approval.
+    # Off by default and per-account, so turning it on is a deliberate act for
+    # one account rather than a mode the whole instance falls into. It does
+    # not widen any other gate: a live account still needs ENABLE_LIVE_TRADING
+    # and live_enabled, and every auto order goes through the same risk engine
+    # as a manual one.
+    auto_execute: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Set when profile+funds were last fetched successfully — read-path proof.
     read_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -239,6 +248,13 @@ class Order(Base):
     average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     status: Mapped[str] = mapped_column(String(20), default="PENDING_RISK")
     status_message: Mapped[str | None] = mapped_column(Text)
+    # True when the AI placed this without a human approving it. Recorded on
+    # the order itself because it is the only durable answer to "did a person
+    # agree to this trade?" -- the proposal it came from can be edited or
+    # deleted, and an audit search cannot bound the daily auto-trade rule.
+    auto_executed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
     # Which contract, for a derivatives order. modify_order rebuilds an
     # OrderRequest from this row, and Breeze requires all three on PUT /order
     # as well as POST -- so an F&O order that did not remember its contract

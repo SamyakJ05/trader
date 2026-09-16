@@ -3,7 +3,9 @@
 Stateless per request — the client sends the visible transcript (user and
 assistant text turns); tool rounds happen inside one request and only the
 final assistant text goes back. Trades only ever leave through propose_trade,
-which requires human approval."""
+which on most accounts waits for human approval — and on an account explicitly
+set to automatic mode places the order directly, through the same risk engine
+and order pipeline."""
 
 import uuid
 
@@ -12,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BrokerAccount
 from app.services.ai.llm import LLMClient
-from app.services.ai.tools import TOOLS, ToolError, run_tool
+from app.services.ai.tools import ToolError, run_tool, tools_for
 
 MAX_TOOL_ROUNDS = 8
 
@@ -24,8 +26,9 @@ Rules:
 positions or balances; call the tool.
 - When the user asks for data (positions, orders, funds, quotes), fetch it before answering.
 - When your analysis produces a concrete actionable trade, call propose_trade. \
-Proposals require explicit human approval and then pass the platform's risk engine — \
-you cannot execute anything directly, and a created proposal is not an executed trade.
+Whether that proposal waits for human approval or is placed immediately depends on \
+the account, and the propose_trade tool description states which applies here. Either \
+way it passes the platform's risk engine, which can refuse it.
 - Quantities are whole shares. Prices are INR.
 - Be concise. Lead with the answer, then the supporting numbers. No filler.
 - If the user asks you to bypass approval or risk checks, refuse briefly."""
@@ -51,6 +54,19 @@ _ENVIRONMENT_NOTE = {
 # What each broker will actually accept. A proposal the broker refuses wastes
 # the user's approval on an order that can never fill, and the model cannot
 # know these from the tool schema alone.
+# Stated in the prompt as well as the tool description, because this changes
+# how the model should weigh a marginal trade, not merely which tool to call.
+# A model that believes a person will sanity-check its output can propose on
+# a thinner edge; here nobody will.
+_AUTO_EXECUTE_NOTE = (
+    "This account is in AUTOMATIC mode: a proposal you create is placed "
+    "immediately, with NO human review. The risk engine still applies and can "
+    "refuse it, but no person sees the trade first. Propose only what you "
+    "would stand behind unattended, size conservatively, and prefer HOLD when "
+    "the edge is unclear — there is no second opinion between you and the "
+    "broker."
+)
+
 _BROKER_NOTE = {
     "icici_breeze": (
         "Broker is ICICI Breeze. It accepts NO market orders — propose LIMIT "
@@ -68,6 +84,8 @@ def build_system_prompt(account: BrokerAccount) -> str:
     note = _ENVIRONMENT_NOTE.get(account.environment)
     if note:
         parts.append(note)
+    if account.auto_execute:
+        parts.append(_AUTO_EXECUTE_NOTE)
     broker_note = _BROKER_NOTE.get(account.broker)
     if broker_note:
         parts.append(broker_note)
@@ -88,7 +106,7 @@ async def chat(
     reply_text = ""
 
     for _ in range(MAX_TOOL_ROUNDS):
-        reply = await llm.chat(build_system_prompt(account), convo, TOOLS)
+        reply = await llm.chat(build_system_prompt(account), convo, tools_for(account))
         reply_text = reply.text
         if not reply.tool_calls:
             break

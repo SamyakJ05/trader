@@ -52,6 +52,13 @@ export function LiveEnabledChip({ liveEnabled }: { liveEnabled: boolean }) {
   );
 }
 
+export function AutoExecuteChip({ autoExecute }: { autoExecute: boolean }) {
+  // Shown only when on. An account that asks a person before trading is the
+  // normal case and needs no badge; one that does not is the exception a
+  // glance down the list has to catch.
+  return autoExecute ? <Pill value="live" label="AUTO-TRADING" /> : null;
+}
+
 const CAPABILITY_FIELDS: [keyof BrokerCapabilities, string][] = [
   ["place_order", "Orders"],
   ["holdings", "Holdings"],

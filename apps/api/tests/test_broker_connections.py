@@ -25,6 +25,7 @@ def account_row(**overrides):
         status="disconnected",
         status_message=None,
         live_enabled=False,
+        auto_execute=False,
         last_sync_at=None,
         read_verified_at=None,
         credential_ref="ZERODHA_TEST",

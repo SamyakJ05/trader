@@ -98,6 +98,7 @@ async def place_order(
     request: OrderRequest,
     client_order_id: str,
     strategy_id: uuid.UUID | None = None,
+    auto_executed: bool = False,
 ) -> Order:
     # Step 1 of the pipeline, enforced here rather than trusted from callers:
     # the account must belong to the user the order is being placed for.
@@ -120,6 +121,7 @@ async def place_order(
             request=request,
             client_order_id=client_order_id,
             strategy_id=strategy_id,
+            auto_executed=auto_executed,
         )
     except IntegrityError:
         # Concurrent request with the same client_order_id won the unique-index
@@ -140,6 +142,7 @@ async def _place_order_unchecked(
     request: OrderRequest,
     client_order_id: str,
     strategy_id: uuid.UUID | None = None,
+    auto_executed: bool = False,
 ) -> Order:
     db.add(
         IdempotencyKey(
@@ -193,6 +196,7 @@ async def _place_order_unchecked(
         last_price=last_price,
         client_order_id=client_order_id,
         strategy_id=strategy_id,
+        auto_executed=auto_executed,
     )
 
     order = Order(
@@ -215,6 +219,7 @@ async def _place_order_unchecked(
         strike=request.strike,
         option_right=request.right.value if request.right else None,
         status=OrderStatus.PENDING_RISK.value,
+        auto_executed=auto_executed,
     )
     db.add(order)
 

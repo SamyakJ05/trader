@@ -11,7 +11,6 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.adapters.base import FeatureNotSupportedError
 from app.core.config import get_settings
 from app.core.deps import DbSession, VerifiedUser
 from app.core.redis import get_redis
@@ -19,19 +18,11 @@ from app.db.models import AIProposal, AISettings
 from app.domain.enums import (
     AIProposalStatus,
     AuditEventType,
-    Exchange,
-    OptionRight,
-    OrderSide,
-    OrderType,
-    ProductType,
-    SignalType,
 )
-from app.engines.strategy import execution
-from app.engines.strategy.base import Signal
-from app.services import audit, quotes
+from app.services import audit
 from app.services import brokers as broker_service
-from app.services import orders as order_service
 from app.services.ai import analyst, generator
+from app.services.ai import execute as ai_execute
 from app.services.ai.llm import (
     DEFAULT_MODELS,
     OPENROUTER_BASE_URL,
@@ -430,56 +421,15 @@ async def approve_proposal(proposal_id: uuid.UUID, user: VerifiedUser, db: DbSes
             status.HTTP_409_CONFLICT, "Broker account no longer exists or is not yours"
         )
 
-    # Routed through the same execution policy as a strategy signal rather
-    # than built directly. A proposal carrying MARKET/MIS -- which the tool
+    # Routed through the shared proposal executor, which is the same code the
+    # auto-execute path uses. A proposal carrying MARKET/MIS -- which the tool
     # schema used to allow on any broker -- would otherwise reach a Breeze
     # account as an order it refuses on both counts, after the user had
     # already approved a real trade.
-    signal = Signal(
-        symbol=p.symbol,
-        signal_type=(
-            SignalType.ENTRY_LONG if p.side == OrderSide.BUY.value
-            else SignalType.EXIT_LONG
-        ),
-        quantity=p.quantity,
-        order_type=OrderType(p.order_type),
-        product=ProductType(p.product),
-        limit_price=p.limit_price,
-        # The contract, for a derivatives proposal. Dropping these would
-        # place a cash order in the underlying rather than the option the
-        # analyst described and the user approved.
-        expiry=p.expiry,
-        strike=p.strike,
-        right=OptionRight(p.option_right) if p.option_right else None,
-    )
-    exchange = Exchange(p.exchange)
     try:
-        last_price = await quotes.reference_price(
-            db, get_redis(), account=account, symbol=p.symbol, exchange=exchange.value
-        )
-    except quotes.NoQuoteAvailable:
-        last_price = None
-    try:
-        request = execution.build_order_request(
-            signal=signal,
-            side=OrderSide(p.side),
-            exchange=exchange,
-            broker=account.broker,
-            params={},
-            last_price=last_price,
-        )
-    except FeatureNotSupportedError as exc:
-        # The proposal cannot be expressed at this broker. Said plainly rather
-        # than letting it fail later as an opaque broker rejection.
+        order = await ai_execute.place_from_proposal(db, p, account, auto_executed=False)
+    except ai_execute.ProposalNotExecutable as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    order = await order_service.place_order(
-        db,
-        get_redis(),
-        user_id=user.id,
-        account=account,
-        request=request,
-        client_order_id=f"ai-{p.id.hex[:18]}",
-    )
     p.status = AIProposalStatus.APPROVED.value
     p.order_id = order.id
     p.decided_at = utcnow()

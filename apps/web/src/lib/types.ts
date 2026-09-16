@@ -50,6 +50,7 @@ export interface BrokerAccount {
   status: string;
   status_message: string | null;
   live_enabled: boolean;
+  auto_execute: boolean;
   last_sync_at: string | null;
   read_verified_at: string | null;
   credential_ref: string | null;

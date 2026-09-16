@@ -70,9 +70,15 @@ async def accounts(sessions):
             made[key] = (
                 await db.execute(
                     text(
+                        # live_enabled is spelled out because its default is
+                        # Python-side (models.py), not a server default: the
+                        # ORM supplies it on every insert the application
+                        # makes, and raw SQL like this must do the same or
+                        # trip the NOT NULL constraint.
                         "INSERT INTO broker_accounts (id, user_id, broker, label, "
-                        "environment, status, created_at) VALUES "
-                        "(gen_random_uuid(), :u, :b, :l, 'paper', 'connected', now()) "
+                        "environment, status, live_enabled, created_at) VALUES "
+                        "(gen_random_uuid(), :u, :b, :l, 'paper', 'connected', "
+                        "false, now()) "
                         "RETURNING id"
                     ),
                     {"u": user, "b": broker, "l": f"{key}-{uuid.uuid4().hex[:6]}"},

@@ -164,6 +164,35 @@ export default function BrokersPage() {
             body: JSON.stringify({ live_enabled: !account.live_enabled }),
           });
           break;
+        case "toggle-auto-execute": {
+          // Turning it ON is confirmed; turning it off never is. The
+          // confirmation names the environment because the consequence of a
+          // mistake differs entirely between the two, and a live account is
+          // the case where a reflexive click costs real money.
+          if (!account.auto_execute) {
+            const warning =
+              account.environment === "live"
+                ? `Let the AI place REAL orders on “${account.label}” with no approval?\n\n` +
+                  "Trades will be sent to your broker automatically, using real money, " +
+                  "without you seeing them first. Your risk limits still apply and can " +
+                  "refuse a trade, but nothing else will.\n\nYou can turn this off at any time."
+                : `Let the AI trade “${account.label}” automatically?\n\n` +
+                  "This is a paper account, so the orders are simulated. Your risk " +
+                  "limits still apply.";
+            if (!window.confirm(warning)) break;
+          }
+          await api(`/brokers/accounts/${account.id}/auto-execute`, {
+            method: "PATCH",
+            body: JSON.stringify({ auto_execute: !account.auto_execute }),
+          });
+          push(
+            "info",
+            account.auto_execute
+              ? "Auto-trading stopped — proposals need your approval again"
+              : "Auto-trading on — the AI can now place orders without approval",
+          );
+          break;
+        }
         case "delete":
           if (!window.confirm(`Delete connection “${account.label}”?`)) break;
           await api(`/brokers/accounts/${account.id}`, { method: "DELETE" });

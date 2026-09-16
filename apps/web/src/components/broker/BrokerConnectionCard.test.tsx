@@ -12,6 +12,7 @@ function account(overrides: Partial<BrokerAccount> = {}): BrokerAccount {
     status: "disconnected",
     status_message: null,
     live_enabled: false,
+    auto_execute: false,
     last_sync_at: null,
     read_verified_at: null,
     credential_ref: "ZERODHA_MAIN",
@@ -114,5 +115,29 @@ describe("BrokerConnectionCard truthfulness", () => {
     );
     expect(screen.getByText(/read verified/)).toBeDefined();
     expect(screen.getByText(/synced/)).toBeDefined();
+  });
+});
+
+describe("auto-trading visibility", () => {
+  it("an account that trades unattended says so on the card", () => {
+    render(
+      <BrokerConnectionCard
+        account={account({ auto_execute: true })}
+        capabilities={zerodhaCaps}
+        onAction={vi.fn()}
+      />
+    );
+    // The badge is the only thing distinguishing an account that trades by
+    // itself from one that asks first, at a glance down a list of them.
+    expect(screen.getByText("AUTO-TRADING")).toBeDefined();
+    expect(screen.getByText("Stop auto-trading")).toBeDefined();
+  });
+
+  it("a normal account shows no auto-trading badge", () => {
+    render(
+      <BrokerConnectionCard account={account()} capabilities={zerodhaCaps} onAction={vi.fn()} />
+    );
+    expect(screen.queryByText("AUTO-TRADING")).toBeNull();
+    expect(screen.getByText("Auto-trade")).toBeDefined();
   });
 });

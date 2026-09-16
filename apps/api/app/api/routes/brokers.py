@@ -47,6 +47,7 @@ class AccountOut(BaseModel):
     status: str
     status_message: str | None
     live_enabled: bool
+    auto_execute: bool
     last_sync_at: datetime | None
     read_verified_at: datetime | None
     credential_ref: str | None
@@ -67,6 +68,7 @@ def _account_out(a: BrokerAccount) -> AccountOut:
         status=a.status,
         status_message=a.status_message,
         live_enabled=a.live_enabled,
+        auto_execute=a.auto_execute,
         last_sync_at=a.last_sync_at,
         read_verified_at=a.read_verified_at,
         credential_ref=a.credential_ref,
@@ -383,6 +385,55 @@ async def set_live_enabled(
         entity_type="broker_account",
         entity_id=account.id,
         payload={"action": "set_live_enabled", "live_enabled": body.live_enabled},
+    )
+    await db.commit()
+    return _account_out(account)
+
+
+class AutoExecuteBody(BaseModel):
+    auto_execute: bool
+
+
+@router.patch("/accounts/{account_id}/auto-execute", response_model=AccountOut)
+async def set_auto_execute(
+    account_id: uuid.UUID, body: AutoExecuteBody, user: VerifiedUser, db: DbSession
+):
+    """Let the AI analyst trade this account with no human approval.
+
+    Disabling is always allowed and takes effect on the next proposal. Enabling
+    a LIVE account additionally requires that live trading already be permitted
+    for it -- otherwise turning this on would appear to authorize automatic
+    real-money trading while every order was still refused by the live gate,
+    which is a confusing way to find out the account was never live.
+
+    This does not widen any other gate. Every automatic order passes the same
+    risk engine, kill switches and live gates as a manual one; what it removes
+    is the person, not the checks.
+    """
+    account = await broker_service.get_account(db, user.id, account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
+    if body.auto_execute and account.environment == Environment.LIVE.value:
+        refusal = broker_service.can_enable_live(account)
+        if refusal:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Cannot automate a live account that cannot trade live: {refusal}",
+            )
+        if not account.live_enabled:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Enable live trading for this account first — automatic orders would "
+                "otherwise be refused by the live gate.",
+            )
+    account.auto_execute = body.auto_execute
+    await audit.emit(
+        db,
+        AuditEventType.USER_ACTION,
+        user_id=user.id,
+        entity_type="broker_account",
+        entity_id=account.id,
+        payload={"action": "set_auto_execute", "auto_execute": body.auto_execute},
     )
     await db.commit()
     return _account_out(account)

@@ -1,6 +1,11 @@
-"""Tools exposed to the AI analyst. All read-only against our own DB/redis —
-except propose_trade, which records a PROPOSED row for human approval.
-Nothing here talks to a broker or places an order."""
+"""Tools exposed to the AI analyst.
+
+All read-only against our own DB/redis except propose_trade, which records a
+proposal. On a normal account that proposal waits for human approval and
+nothing here reaches a broker. On an account the user has explicitly put in
+automatic mode (broker_accounts.auto_execute), propose_trade also places the
+order immediately, through the same pipeline and risk engine a human approval
+uses -- see services/ai/execute.py."""
 
 import json
 import uuid
@@ -20,14 +25,24 @@ from app.db.models import (
     Position,
     RiskRule,
     Strategy,
+    utcnow,
 )
-from app.domain.enums import AuditEventType, Broker, OrderSide, OrderType, ProductType
+from app.domain.enums import (
+    AIProposalStatus,
+    AuditEventType,
+    Broker,
+    OrderSide,
+    OrderType,
+    ProductType,
+)
 from app.engines.market.candles import history as candle_history
 from app.engines.paper import market_sim
 from app.engines.strategy.base import Bar
 from app.engines.strategy.indicators import atr, bollinger, macd, rsi, sma
 from app.services import audit, quotes
 from app.services import news as news_service
+from app.services.ai import execute
+from app.services.orders import OrderServiceError
 from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
 
 TOOLS: list[dict] = [
@@ -202,8 +217,11 @@ TOOLS: list[dict] = [
     {
         "name": "propose_trade",
         "description": (
-            "Call this when you want to suggest a trade. Creates a proposal that the "
-            "user must approve before any order is placed — it never trades by itself. "
+            "Call this when you want to suggest a trade. Creates a proposal, which is "
+            "then either held for the user's approval or, on an account the user has "
+            "put in automatic mode, placed immediately — tools_for() states which "
+            "applies to the selected account. Either way it passes the platform's risk "
+            "engine, which can still refuse it. "
             "Use it whenever your analysis arrives at a concrete actionable trade."
         ),
         "input_schema": {
@@ -361,6 +379,31 @@ def validate_proposal_args(args: dict, *, broker: str | None = None) -> dict:
         "strike": strike,
         "option_right": option_right,
     }
+
+
+def tools_for(account: BrokerAccount) -> list[dict]:
+    """TOOLS, with propose_trade described as it will actually behave here.
+
+    The static description cannot say whether approval applies: that is a
+    per-account setting. A model told a human will review its proposal, on an
+    account where nobody will, is being asked to reason about the wrong
+    situation -- it is the difference between suggesting a trade and making
+    one, and it should size and hedge accordingly.
+    """
+    if not account.auto_execute:
+        return TOOLS
+    tools = [dict(t) for t in TOOLS]
+    for tool in tools:
+        if tool["name"] == "propose_trade":
+            tool["description"] = (
+                "Call this when you want to suggest a trade. This account is in "
+                "AUTOMATIC mode: the trade is placed IMMEDIATELY with no human "
+                "review. It still passes the risk engine, which can refuse it, but "
+                "no person will see it before it reaches the broker. Treat every "
+                "call as placing the order yourself. Use it only when your analysis "
+                "arrives at a concrete trade you would stand behind unattended."
+            )
+    return tools
 
 
 def _num(value) -> str | None:
@@ -749,12 +792,79 @@ async def run_tool(
                 "rationale": fields["rationale"],
             },
         )
+        if not account.auto_execute:
+            await db.commit()
+            return json.dumps(
+                {
+                    "proposal_id": str(proposal.id),
+                    "status": AIProposalStatus.PROPOSED.value,
+                    "note": "Awaiting human approval — do not assume it executed.",
+                }
+            )
+
+        # Automatic mode. The proposal row is written first and the order is
+        # placed from it, so a failure here leaves a durable record of what
+        # was attempted rather than nothing at all.
+        #
+        # The order goes through the identical pipeline a human approval uses
+        # -- same risk engine, same live gates, same idempotency. What is
+        # removed is the person, not the checks.
+        try:
+            order = await execute.place_from_proposal(
+                db, proposal, account, auto_executed=True
+            )
+        except (execute.ProposalNotExecutable, OrderServiceError) as exc:
+            proposal.status = AIProposalStatus.AUTO_FAILED.value
+            proposal.decided_at = utcnow()
+            await audit.emit(
+                db,
+                AuditEventType.AI_PROPOSAL,
+                user_id=user_id,
+                entity_type="ai_proposal",
+                entity_id=proposal.id,
+                payload={"action": "auto_execute_failed", "error": str(exc)},
+            )
+            await db.commit()
+            # Returned as a result, not raised: the model should see that its
+            # trade did not happen and why, and be able to respond to it.
+            return json.dumps(
+                {
+                    "proposal_id": str(proposal.id),
+                    "status": AIProposalStatus.AUTO_FAILED.value,
+                    "error": str(exc),
+                    "note": "NOT placed. The order was refused before reaching the broker.",
+                }
+            )
+
+        proposal.status = AIProposalStatus.AUTO_EXECUTED.value
+        proposal.order_id = order.id
+        proposal.decided_at = utcnow()
+        await audit.emit(
+            db,
+            AuditEventType.AI_PROPOSAL,
+            user_id=user_id,
+            entity_type="ai_proposal",
+            entity_id=proposal.id,
+            payload={
+                "action": "auto_executed",
+                "order_id": str(order.id),
+                "order_status": order.status,
+            },
+        )
         await db.commit()
+        # A risk block is an order row in REJECTED_RISK, not an exception, so
+        # the model is told the real outcome rather than a blanket "placed".
         return json.dumps(
             {
                 "proposal_id": str(proposal.id),
-                "status": "PROPOSED",
-                "note": "Awaiting human approval — do not assume it executed.",
+                "status": AIProposalStatus.AUTO_EXECUTED.value,
+                "order_id": str(order.id),
+                "order_status": order.status,
+                "order_message": order.status_message,
+                "note": (
+                    "Placed automatically with no human approval. "
+                    "Check order_status: it may still have been refused by risk."
+                ),
             }
         )
 

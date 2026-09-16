@@ -23,7 +23,7 @@ from app.services.ai.tools import ToolError, validate_proposal_args
 
 
 def account(environment="paper", broker="paper"):
-    return SimpleNamespace(environment=environment, broker=broker)
+    return SimpleNamespace(environment=environment, broker=broker, auto_execute=False)
 
 
 # ── what the model is told about the money ───────────────────────────

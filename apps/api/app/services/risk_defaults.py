@@ -33,6 +33,10 @@ DEFAULT_RULES: list[tuple[RiskRuleType, dict]] = [
     (RiskRuleType.MAX_DAILY_LOSS, {"max_loss": 5000}),
     # A strategy looping on the same signal.
     (RiskRuleType.DUPLICATE_ORDER_COOLDOWN, {"seconds": 5}),
+    # How often the AI may trade unattended. Bounds frequency, which no
+    # rupee limit does: a malfunctioning loop placing many small orders
+    # passes every ceiling above while trading all day.
+    (RiskRuleType.MAX_AUTO_TRADES_PER_DAY, {"max_auto_trades": 10}),
     (RiskRuleType.MARKET_HOURS, {}),
 ]
 
@@ -76,6 +80,7 @@ EDITABLE_FIELD: dict[RiskRuleType, tuple[str, str]] = {
     RiskRuleType.MAX_POSITION_SIZE: ("max_quantity", "shares"),
     RiskRuleType.MAX_OPEN_POSITIONS: ("max_positions", "positions"),
     RiskRuleType.DUPLICATE_ORDER_COOLDOWN: ("seconds", "seconds"),
+    RiskRuleType.MAX_AUTO_TRADES_PER_DAY: ("max_auto_trades", "trades"),
     # MARKET_HOURS takes no parameter: it is on or off.
 }
 
@@ -101,6 +106,8 @@ def describe(rule_type: RiskRuleType, params: dict) -> str:
         return f"At most {params.get('max_positions', 0)} open positions"
     if rule_type == RiskRuleType.DUPLICATE_ORDER_COOLDOWN:
         return f"Same order at most once every {params.get('seconds', 0)}s"
+    if rule_type == RiskRuleType.MAX_AUTO_TRADES_PER_DAY:
+        return f"At most {params.get('max_auto_trades', 0)} automatic trades per day"
     if rule_type == RiskRuleType.MARKET_HOURS:
         return "Only during NSE market hours"
     return ""

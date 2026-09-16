@@ -110,6 +110,12 @@ class RiskRuleType(StrEnum):
     MAX_OPEN_POSITIONS = "MAX_OPEN_POSITIONS"
     DUPLICATE_ORDER_COOLDOWN = "DUPLICATE_ORDER_COOLDOWN"
     MARKET_HOURS = "MARKET_HOURS"
+    # How many orders the AI may place unattended in one IST day. The capital
+    # ceilings bound how much is committed, not how often: a malfunctioning
+    # loop firing many small orders stays under every rupee limit while
+    # trading all day and paying charges on each round trip. Counts only
+    # auto-executed orders, so a person clicking approve is never rate-limited.
+    MAX_AUTO_TRADES_PER_DAY = "MAX_AUTO_TRADES_PER_DAY"
 
 
 class BrokerAccountStatus(StrEnum):
@@ -141,6 +147,14 @@ class AIProposalStatus(StrEnum):
     PROPOSED = "PROPOSED"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    # Placed by the analyst with no human in the loop, on an account with
+    # auto_execute on. Distinct from APPROVED so the history can never be
+    # misread as someone having agreed to the trade.
+    AUTO_EXECUTED = "AUTO_EXECUTED"
+    # Auto-execution was attempted and the order was refused (risk block,
+    # broker rejection, a closed market). Recorded rather than dropped: a
+    # proposal that silently vanished would look like it never happened.
+    AUTO_FAILED = "AUTO_FAILED"
 
 
 class AdapterStatus(StrEnum):

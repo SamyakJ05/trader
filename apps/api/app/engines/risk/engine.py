@@ -20,6 +20,7 @@ from app.db.models import (
     Position,
     RiskEvent,
     RiskRule,
+    User,
 )
 from app.domain import calendar
 from app.domain.enums import (
@@ -37,6 +38,31 @@ NSE_OPEN = calendar.NSE_OPEN
 NSE_CLOSE = calendar.NSE_CLOSE
 
 COOLDOWN_KEY = "risk:cooldown:{account_id}:{symbol}:{side}"
+
+
+async def lock_user(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Serialize risk evaluation for one user until the caller commits.
+
+    The portfolio rules -- exposure, turnover, open positions, daily loss --
+    are read-then-act: each sums what is already committed and compares the
+    total against a ceiling. Without a lock, concurrent orders each read the
+    same "before" figure and each conclude there is room, so N orders that are
+    individually under the ceiling pass together and land over it. A 200k
+    exposure limit with 150k held admits five concurrent 40k buys, every one
+    of which measured 190k.
+
+    Locked on the USER row, not the account: these ceilings span every account
+    in an environment, so an account-level lock would let two accounts of the
+    same user race against the same budget. This is the same FOR NO KEY UPDATE
+    the paper ledger takes on the account, for the same reason and with the
+    same lifetime -- it is held until the transaction ends, which is after the
+    order row is written, so a concurrent evaluation sees the committed order.
+
+    Ordering note: this lock is taken BEFORE the paper engine's per-account
+    lock on the fill path, and nothing takes them in the opposite order, so
+    the pair cannot deadlock.
+    """
+    await db.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))
 
 
 # Re-exported so existing callers and tests keep working; the calendar module
@@ -59,10 +85,15 @@ class RiskEngine:
         last_price: Decimal,
         client_order_id: str,
         strategy_id: uuid.UUID | None = None,
+        auto_executed: bool = False,
     ) -> RiskResult:
         reasons: list[str] = []
         checked: list[str] = []
         decision = RiskDecision.ALLOW
+
+        # Held until the caller commits, so every portfolio rule below reads a
+        # figure no concurrent order can be adding to. See lock_user.
+        await lock_user(self.db, user_id)
 
         # Kill switches first — cheapest and most absolute.
         if await killswitch.is_global_engaged(self.redis):
@@ -79,7 +110,14 @@ class RiskEngine:
                 rule_type = RiskRuleType(rule.rule_type)
                 checked.append(rule_type.value)
                 reason = await self._check_rule(
-                    rule_type, rule.params, user_id, account, request, environment, last_price
+                    rule_type,
+                    rule.params,
+                    user_id,
+                    account,
+                    request,
+                    environment,
+                    last_price,
+                    auto_executed,
                 )
                 if reason:
                     reasons.append(reason)
@@ -116,6 +154,7 @@ class RiskEngine:
         request: OrderRequest,
         environment: str,
         last_price: Decimal | None,
+        auto_executed: bool = False,
     ) -> str | None:
         if rule_type == RiskRuleType.MARKET_HOURS:
             if get_settings().market_hours_enforced and not is_market_open():
@@ -344,6 +383,43 @@ class RiskEngine:
             )
             if pnl < -limit_loss:
                 return f"Daily realized loss {pnl:.2f} breaches limit -{limit_loss:.2f}"
+
+        elif rule_type == RiskRuleType.MAX_AUTO_TRADES_PER_DAY:
+            # Only bounds unattended orders. A person clicking approve has
+            # already applied the judgement this rule exists to substitute
+            # for, so rate-limiting them would be the wrong restriction.
+            if not auto_executed:
+                return None
+            limit_n = int(params.get("max_auto_trades", 10))
+            # The IST trading day, matching MAX_DAILY_TURNOVER: a UTC boundary
+            # would reset the budget at 05:30 IST, mid pre-open.
+            start = (
+                datetime.now(calendar.IST)
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .astimezone(timezone.utc)
+            )
+            # Orders, not fills: an auto order that was placed and rejected by
+            # the broker still represents the loop having fired, which is what
+            # this bounds. Counting fills would let a broken strategy retry
+            # without limit as long as nothing filled.
+            placed = (
+                await self.db.execute(
+                    select(func.count())
+                    .select_from(Order)
+                    .where(
+                        Order.user_id == user_id,
+                        Order.environment == environment,
+                        Order.auto_executed.is_(True),
+                        Order.placed_at >= start,
+                    )
+                )
+            ).scalar_one()
+            if placed >= limit_n:
+                return (
+                    f"Daily automatic-trade limit reached ({placed} of {limit_n} placed "
+                    "today). Approve trades manually, or raise the limit. The budget "
+                    "resets at midnight IST."
+                )
 
         elif rule_type == RiskRuleType.DUPLICATE_ORDER_COOLDOWN:
             key = COOLDOWN_KEY.format(
