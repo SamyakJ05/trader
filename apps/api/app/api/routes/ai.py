@@ -163,7 +163,44 @@ async def test_settings(user: VerifiedUser, db: DbSession):
         )
         return {"ok": bool(out.get("ok")), "provider": llm.provider, "model": llm.model}
     except LLMError as e:
-        return {"ok": False, "error": str(e)[:300]}
+        return {
+            "ok": False,
+            "error": str(e)[:300],
+            "hint": _provider_hint(llm.provider, str(e)),
+        }
+
+
+def _provider_hint(provider: str, error: str) -> str | None:
+    """A next step for the failures that are not obvious from the message.
+
+    Bedrock's are the worst of these: AWS reports a rejected model id as a
+    ValidationException naming the id, which reads like the model does not
+    exist rather than like it is not enabled or not addressable this way in
+    this region.
+    """
+    lowered = error.lower()
+    if provider != "bedrock":
+        return None
+    if "security token" in lowered or "403" in lowered or "unrecognizedclient" in lowered:
+        return (
+            "AWS rejected the credentials. Bedrock needs an IAM access key "
+            "with bedrock:InvokeModel, not a Claude API key — check the key, "
+            "the secret and the region all belong to the same account."
+        )
+    if "validation" in lowered or "model" in lowered:
+        return (
+            "AWS rejected the model id. Recent Claude models on Bedrock are "
+            "addressed as region-prefixed inference profiles "
+            "(us.anthropic.… / eu.anthropic.…) rather than the bare "
+            "anthropic.… id, and the model must be enabled for your account "
+            "in the Bedrock console for the region you selected."
+        )
+    if "accessdenied" in lowered:
+        return (
+            "The credentials are valid but lack permission. The IAM policy "
+            "needs bedrock:InvokeModel for this model in this region."
+        )
+    return None
 
 
 async def _require_llm(db, user_id):

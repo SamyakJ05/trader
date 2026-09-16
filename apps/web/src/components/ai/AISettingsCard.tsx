@@ -25,6 +25,7 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
   const { push } = useToast();
   const [provider, setProvider] = useState("anthropic");
   const [model, setModel] = useState("");
+  const [testError, setTestError] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [awsKeyId, setAwsKeyId] = useState("");
@@ -79,10 +80,17 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
   async function test() {
     setTesting(true);
     try {
-      const res = await api<{ ok: boolean; error?: string; model?: string }>(
-        "/ai/settings/test",
-        { method: "POST" }
-      );
+      const res = await api<{
+        ok: boolean;
+        error?: string;
+        model?: string;
+        hint?: string;
+      }>("/ai/settings/test", { method: "POST" });
+      // A toast truncates, and a provider hint is the part worth reading —
+      // Bedrock's failures in particular say "ValidationException: <model
+      // id>", which reads like the model does not exist rather than like it
+      // needs enabling for the region.
+      setTestError(res.ok ? null : (res.hint ?? res.error ?? "Unknown error"));
       if (res.ok) push("success", `Connection OK (${res.model})`);
       else push("error", `Test failed: ${res.error ?? "unknown error"}`);
     } catch (err) {
@@ -203,6 +211,12 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
         Keys are stored Fernet-encrypted on the backend and never shown again. The backend
         ANTHROPIC_API_KEY env var works as a zero-config fallback.
       </p>
+
+      {testError && (
+        <p className="mt-4 rounded border border-loss/40 bg-loss/10 px-3 py-2 text-xs text-loss">
+          {testError}
+        </p>
+      )}
 
       <div className="mt-4 flex justify-end gap-2">
         <Button onClick={test} disabled={testing || !configured}>

@@ -19,7 +19,12 @@ dependencies = [
     "bcrypt>=4.2",
     "cryptography>=43.0",
     "greenlet>=3.1",
-    "anthropic>=0.40",
+    # [bedrock] brings boto3/botocore, which AsyncAnthropicBedrock needs to
+    # sign requests with SigV4. Without it the client CONSTRUCTS fine and then
+    # raises ModuleNotFoundError on the first call -- in the worker, where
+    # nobody is watching, so AI strategies would simply stop producing
+    # signals with no visible error.
+    "anthropic[bedrock]>=0.40",
     "openai>=1.50",
     "pyotp>=2.9",
     # Zerodha's own SDK. Used for the Kite WebSocket tick protocol, which is a
