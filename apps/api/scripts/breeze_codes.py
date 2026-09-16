@@ -5,14 +5,21 @@ naming the NSE ticker is refused at creation because it would otherwise find
 no candles, emit no signals and look merely quiet.
 
 This resolves a list of NSE tickers to Breeze's own codes using the synced
-instrument master, by two routes:
+instrument master, in descending order of confidence:
 
-  1. ISIN — the same identifier at every venue, so a Zerodha or NSE row and a
-     Breeze row carrying the same ISIN name the same security. Exact, when
-     another broker's master is present to bridge through.
-  2. The name field — Breeze's master stores "RELIANCE INDUSTRIES (RELIANCE)",
-     with the NSE ticker in parentheses. Used when no second master exists to
-     bridge through, which is the common case on a Breeze-only instance.
+  1. ISIN — the same identifier at every venue, so another broker's row and a
+     Breeze row carrying the same ISIN name the same security. Exact, and
+     available whenever a second broker's master has been synced.
+  2. The name field, for a master that carries the ticker in it.
+  3. A one-character near-miss on the code itself, reported as a likely typo:
+     RELIIND is not a ticker needing translation, it is RELIND misspelt.
+  4. The company name's leading letters, for a Breeze-only instance where
+     nothing else links INFY to "INFOSYS LTD". Offered as candidates to
+     confirm, never as an answer.
+
+Only 1 and 2 are identifications. Anything below them is labelled in the
+output as something to verify, because a plausible-looking wrong stock code is
+worse than no answer when the next step is an order.
 
 Run it read-only first; pass --sync to refresh the master when a ticker is
 missing because the master is stale rather than because the code differs.
@@ -33,6 +40,36 @@ from app.db.session import async_session_factory
 from app.services.instruments import sync_instruments
 
 BROKER = "icici_breeze"
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """True when a and b differ by a single insertion, deletion or swap.
+
+    Deliberately not a full edit-distance: one edit is the distance between a
+    code and a typo of it (RELIND / RELIIND), while two already reaches
+    genuinely different instruments and would turn a typo hint into a wrong
+    suggestion next to an order form.
+    """
+    a, b = a.upper(), b.upper()
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b, strict=True)) == 1
+    shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+    i = j = 0
+    skipped = False
+    while i < len(shorter) and j < len(longer):
+        if shorter[i] != longer[j]:
+            if skipped:
+                return False
+            skipped = True
+            j += 1
+            continue
+        i += 1
+        j += 1
+    return True
 
 
 async def _breeze_account(db) -> BrokerAccount | None:
@@ -99,23 +136,86 @@ async def resolve(db, ticker: str, exchange: str = "NSE") -> list[tuple[str, str
         if rows:
             return [(r[0], r[1] or "", f"ISIN {isin}") for r in rows]
 
-    # Route 2 — the name field. Breeze writes "... (NSETICKER)", so the
-    # parenthesised ticker is matched first and exactly; a bare substring
-    # search would make ASHOKLEY match any name merely containing it.
+    # Route 2 — the name field.
+    #
+    # What is in `name` depends on which master the row came from. Breeze's
+    # NSE equity file has NO Symbol column at all (header: Token, ShortName,
+    # Series, CompanyName, ticksize, Lotsize, ..., ISINCode), so `name` holds
+    # the company name alone -- "RELIANCE INDUSTRIES", never "(RELIANCE)".
+    # Matching a parenthesised ticker therefore finds nothing on NSE equities,
+    # and the company name is all there is to search.
+    #
+    # Both shapes are tried: the parenthesised form for any master that does
+    # carry it, then the company name. The company-name match is anchored to
+    # a word boundary rather than a bare substring, so INFY does not match
+    # every name that merely contains those letters.
     rows = (
         await db.execute(
             select(MarketInstrument.symbol, MarketInstrument.name).where(
                 MarketInstrument.broker == BROKER,
                 MarketInstrument.exchange == exchange,
                 or_(
-                    MarketInstrument.name.ilike(f"%({ticker})"),
                     MarketInstrument.name.ilike(f"%({ticker})%"),
+                    MarketInstrument.name.ilike(f"{ticker} %"),
+                    MarketInstrument.name.ilike(f"% {ticker} %"),
+                    MarketInstrument.name == ticker,
                 ),
             )
         )
     ).all()
     if rows:
-        return [(r[0], r[1] or "", "name contains (TICKER)") for r in rows]
+        return [(r[0], r[1] or "", "matched on name") for r in rows]
+
+    # Near-miss on the code itself, before any guessing: RELIIND is not an NSE
+    # ticker needing translation, it is RELIND misspelt, and saying so is a
+    # better answer than "not found" -- which reads as "Breeze does not offer
+    # Reliance" and sends someone hunting for a code they already had.
+    close = (
+        await db.execute(
+            select(MarketInstrument.symbol, MarketInstrument.name).where(
+                MarketInstrument.broker == BROKER,
+                MarketInstrument.exchange == exchange,
+            )
+        )
+    ).all()
+    near = [
+        (code, name or "")
+        for code, name in close
+        if code and _one_edit_apart(code, ticker)
+    ]
+    if near:
+        return [
+            (code, name, f"TYPO? you wrote {ticker}, this is one character away")
+            for code, name in near[:5]
+        ]
+
+    # Route 3 — the company name, for a Breeze-only instance.
+    #
+    # Without a second broker's master there is no ISIN to bridge through, and
+    # Breeze's NSE file carries no ticker, so INFY has nothing to match: the
+    # row says "INFOSYS LTD". The ticker's leading letters are the only link
+    # left, and 4 characters is the shortest prefix that is not noise -- INFY
+    # finds INFOSYS, while 3 would let any three letters match half the file.
+    #
+    # Offered as candidates to confirm, never as the answer, because a prefix
+    # is a resemblance and not an identification.
+    if len(ticker) >= 4:
+        rows = (
+            await db.execute(
+                select(MarketInstrument.symbol, MarketInstrument.name)
+                .where(
+                    MarketInstrument.broker == BROKER,
+                    MarketInstrument.exchange == exchange,
+                    MarketInstrument.name.ilike(f"{ticker[:4]}%"),
+                )
+                .limit(5)
+            )
+        ).all()
+        if rows:
+            return [
+                (r[0], r[1] or "", "name starts with your ticker — CONFIRM before use")
+                for r in rows
+            ]
 
     # Last resort, reported as a guess rather than an answer: the leading
     # alphabetic run of the ticker, which is how several Breeze codes are
