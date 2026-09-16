@@ -10,6 +10,11 @@ That was survivable while the platform was paper-only. It is not survivable
 on a live-only instance about to run unattended AI strategies, which is what
 makes this a migration rather than a note in the runbook.
 
+created_at is supplied explicitly. The column is NOT NULL and its default is
+declared on the ORM model (default=utcnow), which is Python-side only -- raw
+SQL bypasses it entirely. CI did not catch this because its database has no
+users, so the INSERT matched zero rows and succeeded trivially.
+
 Inserted only where a user has no rule of that type in that environment, so
 re-running is safe and anyone who already tuned a limit keeps it. Values match
 app/services/risk_defaults.py; new accounts get the same set at registration.
@@ -41,9 +46,10 @@ def upgrade() -> None:
         for rule_type, params in _RULES:
             op.execute(
                 f"""
-                INSERT INTO risk_rules (id, user_id, environment, rule_type, params, enabled)
+                INSERT INTO risk_rules
+                    (id, user_id, environment, rule_type, params, enabled, created_at)
                 SELECT gen_random_uuid(), u.id, '{environment}', '{rule_type}',
-                       '{params}'::jsonb, true
+                       '{params}'::jsonb, true, now()
                 FROM users u
                 WHERE NOT EXISTS (
                     SELECT 1 FROM risk_rules r
