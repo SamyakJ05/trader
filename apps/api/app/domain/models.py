@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.domain.enums import (
     Environment,
     Exchange,
+    OptionRight,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -28,12 +29,32 @@ class OrderRequest(BaseModel):
     trigger_price: Decimal | None = None
     validity: Validity = Validity.DAY
 
+    # Derivatives contract identity. Absent for cash-segment orders, and
+    # required by every broker for an F&O order: a symbol alone does not name
+    # a contract, since the same underlying has many expiries and strikes.
+    # Held as broker-neutral values (a date, a number, a right) that adapters
+    # format themselves -- Breeze wants ISO 8601 and "call"/"put"/"others",
+    # Kite encodes the whole contract into the tradingsymbol instead.
+    expiry: date | None = None
+    strike: Decimal | None = None
+    right: OptionRight | None = None
+
     @model_validator(mode="after")
     def check_prices(self) -> "OrderRequest":
         if self.order_type in (OrderType.LIMIT, OrderType.SL) and self.price is None:
             raise ValueError(f"{self.order_type} order requires price")
         if self.order_type in (OrderType.SL, OrderType.SL_M) and self.trigger_price is None:
             raise ValueError(f"{self.order_type} order requires trigger_price")
+        # An option needs both a strike and a right; a future needs neither.
+        # Checked here so an incoherent contract cannot reach an adapter,
+        # where it would become a broker rejection with a vaguer message.
+        if self.right in (OptionRight.CALL, OptionRight.PUT):
+            if self.strike is None:
+                raise ValueError("an option order requires a strike")
+            if self.expiry is None:
+                raise ValueError("an option order requires an expiry")
+        if self.strike is not None and self.right is None:
+            raise ValueError("a strike without a right does not name a contract")
         return self
 
 
@@ -110,6 +131,13 @@ class Instrument(BaseModel):
     tick_size: Decimal | None = None
     lot_size: int | None = None
     instrument_type: str | None = None
+
+    # Contract identity for derivatives; all None for a cash-segment row. A
+    # symbol alone does not name an F&O contract -- Breeze lists 3,350 NIFTY
+    # contracts under that one code -- so these are what distinguish them.
+    expiry: date | None = None
+    strike: Decimal | None = None
+    option_right: OptionRight | None = None
 
 
 class Tick(BaseModel):

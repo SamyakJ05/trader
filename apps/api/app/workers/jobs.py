@@ -138,7 +138,12 @@ async def instrument_sync_tick(ctx: dict) -> None:
         if account.broker in done:
             continue
         done.add(account.broker)
-        for exchange in ("NSE", "BSE"):
+        # NFO carries ~80k contracts and is what makes F&O tradable at all.
+        # BSE is deliberately absent for Breeze: ICICI's own documentation
+        # says "securities listed on BSE and MCX are not available on Breeze
+        # API", so syncing it downloads rows no Breeze order could ever use.
+        exchanges = ("NSE", "NFO") if account.broker == "icici_breeze" else ("NSE", "BSE")
+        for exchange in exchanges:
             # Per exchange and per account: one broker's download failing --
             # or one exchange being unavailable -- must not cost the others
             # their sync. A stale master is bad; no master at all is worse.

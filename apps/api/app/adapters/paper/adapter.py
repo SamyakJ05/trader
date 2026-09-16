@@ -153,7 +153,9 @@ class PaperAdapter(BrokerAdapter):
     async def modify_order(self, broker_order_id: str, request: OrderRequest) -> PlaceOrderResult:
         return PlaceOrderResult(broker_order_id=broker_order_id, status=OrderStatus.OPEN)
 
-    async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
+    async def cancel_order(
+        self, broker_order_id: str, exchange: Exchange | None = None
+    ) -> PlaceOrderResult:
         return PlaceOrderResult(broker_order_id=broker_order_id, status=OrderStatus.CANCELLED)
 
     async def get_instruments(self, exchange: str | None = None) -> list[Instrument]:

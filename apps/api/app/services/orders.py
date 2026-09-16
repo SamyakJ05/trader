@@ -275,7 +275,15 @@ async def cancel_order(
 
     adapter = get_trading_adapter(account)
     try:
-        ack = await adapter.cancel_order(order.broker_order_id or "")
+        # The order's own exchange, not a default: Breeze needs exchange_code
+        # on its cancel endpoint, and an NFO order cancelled as NSE is not
+        # found. Parsed defensively -- a cancel must not fail because a stored
+        # string is unexpected.
+        try:
+            order_exchange = Exchange(order.exchange)
+        except ValueError:
+            order_exchange = None
+        ack = await adapter.cancel_order(order.broker_order_id or "", order_exchange)
         old = order.status
         order.status = ack.status.value
         await audit.emit(

@@ -315,7 +315,9 @@ class GrowwAdapter(BrokerAdapter):
     async def modify_order(self, broker_order_id: str, request: OrderRequest) -> PlaceOrderResult:
         raise FeatureNotSupportedError("Groww modify_order scaffolded but unverified")
 
-    async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
+    async def cancel_order(
+        self, broker_order_id: str, exchange: Exchange | None = None
+    ) -> PlaceOrderResult:
         raise FeatureNotSupportedError("Groww cancel_order scaffolded but unverified")
 
     async def get_instruments(self, exchange: str | None = None) -> list[Instrument]:

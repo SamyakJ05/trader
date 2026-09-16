@@ -47,6 +47,7 @@ from app.domain.enums import (
     Broker,
     BrokerAccountStatus,
     Exchange,
+    OptionRight,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -82,14 +83,65 @@ _SECURITY_MASTER_FILES = {
 }
 LOGIN_BASE = "https://api.icicidirect.com/apiuser/login"
 
+# Every status Breeze's own documentation lists under "Types of Order
+# Status", verified against api.icicidirect.com/breezeapi/documents. Five were
+# missing, and an unmapped status read as OPEN -- so an Expired or Freezed
+# order was reported as still working in the book. With the reconciler now
+# polling open orders, that meant re-asking about a dead order forever and
+# never booking it as terminal, while the platform believed it had live
+# exposure it did not have.
+#
+# Keys are matched case-insensitively and whitespace-collapsed (see
+# _map_status), because these arrive with inconsistent casing.
 _STATUS_MAP = {
-    "Ordered": OrderStatus.OPEN,
-    "Requested": OrderStatus.SUBMITTED,
-    "Executed": OrderStatus.FILLED,
-    "Cancelled": OrderStatus.CANCELLED,
-    "Rejected": OrderStatus.REJECTED,
-    "Partially Executed": OrderStatus.PARTIALLY_FILLED,
+    "requested": OrderStatus.SUBMITTED,
+    "queued": OrderStatus.SUBMITTED,
+    "ordered": OrderStatus.OPEN,
+    "partially executed": OrderStatus.PARTIALLY_FILLED,
+    "executed": OrderStatus.FILLED,
+    "cancelled": OrderStatus.CANCELLED,
+    "rejected": OrderStatus.REJECTED,
+    # Terminal at the exchange: the unfilled balance is gone and will not
+    # fill. Both carry a partial fill that has already been booked, so the
+    # order itself is done.
+    "partially executed and cancelled": OrderStatus.CANCELLED,
+    "partially executed and expired": OrderStatus.CANCELLED,
+    # An order that lapsed unfilled at the close of its validity.
+    "expired": OrderStatus.CANCELLED,
+    # Breeze's own term for an order held by a freeze-quantity check. It is
+    # not working in the book and will not fill without intervention, so it
+    # is reported as rejected rather than open -- the conservative reading,
+    # since treating it as live would have the platform count exposure that
+    # does not exist.
+    "freezed": OrderStatus.REJECTED,
 }
+
+
+def _optional_decimal(raw: object) -> Decimal | None:
+    """A price field that Breeze may report as None, '' or '0.00'.
+
+    Zero is returned as None: for a price, "absent" and "zero" are different
+    claims, and a consumer that cannot tell them apart will treat an unfilled
+    order as one filled for free.
+    """
+    if raw in (None, "", "0", "0.00", 0):
+        return None
+    try:
+        parsed = Decimal(str(raw))
+    except ArithmeticError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _map_status(raw: object) -> OrderStatus | None:
+    """Breeze's order status to ours, or None if it is one we do not know.
+
+    None rather than a default: defaulting to OPEN claims a live working
+    order, which for a status Breeze adds later would be a phantom the
+    platform never stops polling and may size new trades against.
+    """
+    key = " ".join(str(raw or "").split()).lower()
+    return _STATUS_MAP.get(key)
 
 # Breeze's product vocabulary is not Kite's and does not map cleanly onto it.
 # Its documented values are futures, options, cash, mtf and btst — there is no
@@ -125,6 +177,29 @@ _ORDER_TYPE_MAP = {
 }
 
 _VALIDITY_MAP = {"DAY": "day", "IOC": "ioc"}
+
+# Exchanges whose orders are derivatives contracts, and therefore need
+# expiry/right/strike. BFO is absent because Breeze's own documentation says
+# "securities listed on BSE and MCX are not available on Breeze API".
+_DERIVATIVE_EXCHANGES = {Exchange.NFO}
+
+# Breeze's order payload spells the right in words, lowercase, and requires
+# the field on every derivatives order -- "others" for a future, where an
+# empty string is rejected. Its security master reports CE/PE/XX instead, and
+# its tick stream a third way again; this is the order-endpoint vocabulary.
+_RIGHT_MAP = {
+    OptionRight.CALL: "call",
+    OptionRight.PUT: "put",
+    OptionRight.OTHERS: "others",
+}
+
+# The security master's OptionType column, which is not the order payload's
+# vocabulary.
+_MASTER_RIGHT_MAP = {
+    "CE": OptionRight.CALL,
+    "PE": OptionRight.PUT,
+    "XX": OptionRight.OTHERS,
+}
 
 # Breeze's product_type as it comes BACK on a position, which is not the same
 # vocabulary as the product names it accepts when placing one. Their docs show
@@ -431,6 +506,42 @@ class BreezeAdapter(BrokerAdapter):
                     action=o.get("action"),
                 )
                 continue
+            status = _map_status(o.get("status"))
+            if status is None:
+                # Skipped rather than defaulted to OPEN: see _map_status.
+                logger.warning(
+                    "breeze_order_unknown_status",
+                    order_id=o.get("order_id"),
+                    status=o.get("status"),
+                )
+                continue
+
+            # Breeze's order book carries NO filled_quantity field. Its real
+            # response (verified against the documented sample) gives
+            # quantity, pending_quantity and cancelled_quantity, so the filled
+            # amount has to be derived. This was never populated at all, which
+            # meant BrokerOrder.filled_quantity defaulted to 0 -- and the fill
+            # reconciler, which books whatever that field reports, would have
+            # found every order permanently unfilled and booked nothing, for
+            # every Breeze order forever.
+            quantity = as_int(o.get("quantity"))
+            pending = as_int(o.get("pending_quantity"))
+            cancelled = as_int(o.get("cancelled_quantity"))
+            filled = max(0, quantity - pending - cancelled)
+
+            # average_price is '0' while nothing has filled. Passed as None in
+            # that case rather than zero, so a consumer cannot mistake "not
+            # yet filled" for "filled at no cost" -- the reconciler refuses to
+            # book a fill without a price for exactly this reason.
+            raw_average = o.get("average_price")
+            average = None
+            if raw_average not in (None, "", "0", "0.00", 0):
+                try:
+                    parsed = Decimal(str(raw_average))
+                    average = parsed if parsed > 0 else None
+                except ArithmeticError:
+                    average = None
+
             out.append(
                 BrokerOrder(
                     broker_order_id=str(o.get("order_id", "")),
@@ -443,8 +554,12 @@ class BreezeAdapter(BrokerAdapter):
                     product=_POSITION_PRODUCT_MAP.get(
                         str(o.get("product_type") or "").lower(), ProductType.CNC
                     ),
-                    quantity=as_int(o.get("quantity")),
-                    status=_STATUS_MAP.get(o.get("status", ""), OrderStatus.OPEN),
+                    quantity=quantity,
+                    filled_quantity=filled,
+                    price=_optional_decimal(o.get("price")),
+                    average_fill_price=average,
+                    status=status,
+                    status_message=None,
                     raw=o,
                 )
             )
@@ -452,9 +567,47 @@ class BreezeAdapter(BrokerAdapter):
 
     # ── trading: blocked until verified against real account ────────
 
+    def _derivatives_fields(self, request: OrderRequest) -> dict:
+        """expiry_date, right and strike_price for an F&O order.
+
+        Breeze's documented POST /order marks all three MANDATORY, and this
+        adapter omitted them entirely -- so no F&O order could ever be placed,
+        despite the capability matrix advertising NFO.
+
+        Formats are from ICICI's own REST documentation, not from their SDK's
+        README, which disagrees with itself: the streaming examples use
+        "13-Feb-2025" while the order endpoint specifies ISO 8601 and its
+        examples use "2024-09-12T06:00:00.000Z". Following the README's
+        streaming form here would have every F&O order rejected. Times are
+        06:00Z because that is the form ICICI's own examples use throughout.
+        """
+        if request.exchange not in _DERIVATIVE_EXCHANGES:
+            # Cash segment: Breeze documents these three as optional for
+            # product cash and btst, and sends them empty.
+            return {"expiry_date": "", "right": "", "strike_price": ""}
+
+        if request.expiry is None:
+            raise FeatureNotSupportedError(
+                f"An {request.exchange.value} order needs an expiry date: "
+                "Breeze requires expiry_date on every derivatives order, and "
+                "a symbol alone does not name a contract."
+            )
+        right = request.right or OptionRight.OTHERS
+        return {
+            "expiry_date": request.expiry.strftime("%Y-%m-%dT06:00:00.000Z"),
+            "right": _RIGHT_MAP[right],
+            # "0" for a future, which is what ICICI's own futures example
+            # sends. An empty string here is rejected.
+            "strike_price": str(request.strike) if request.strike is not None else "0",
+        }
+
     def _order_body(self, request: OrderRequest, client_order_id: str) -> dict:
-        """Breeze's order payload. Field names follow their SDK's own
-        place_order, which is the closest thing to ground truth."""
+        """Breeze's order payload.
+
+        Field names and value formats follow ICICI's published REST reference
+        for POST /order (api.icicidirect.com/breezeapi/documents), which is
+        more authoritative than their SDK where the two differ.
+        """
         refusal = _UNSUPPORTED_PRODUCT.get(request.product)
         if refusal:
             raise FeatureNotSupportedError(refusal)
@@ -462,6 +615,16 @@ class BreezeAdapter(BrokerAdapter):
         if product is None:
             raise FeatureNotSupportedError(
                 f"Breeze has no product mapping for {request.product.value}"
+            )
+        # Breeze names futures and options as different products, so NRML
+        # alone does not determine it -- the contract's right does. Mapping
+        # every NRML order to "futures" would send an option order as a
+        # futures order, which is a different instrument.
+        if request.exchange in _DERIVATIVE_EXCHANGES:
+            product = (
+                "options"
+                if request.right in (OptionRight.CALL, OptionRight.PUT)
+                else "futures"
             )
         order_type = _ORDER_TYPE_MAP.get(request.order_type)
         if order_type is None:
@@ -489,6 +652,7 @@ class BreezeAdapter(BrokerAdapter):
             # (client_order_id, unique per account) remains the only guard
             # against a duplicate order.
             "user_remark": client_order_id[:20],
+            **self._derivatives_fields(request),
         }
         if request.trigger_price is not None:
             body["stoploss"] = str(request.trigger_price)
@@ -545,6 +709,11 @@ class BreezeAdapter(BrokerAdapter):
             "quantity": str(request.quantity),
             "price": str(request.price) if request.price is not None else "",
             "validity": _VALIDITY_MAP.get(request.validity.value, "day"),
+            # PUT /order marks expiry_date, right and strike_price mandatory
+            # too, not only POST. Omitting them meant an F&O order could not
+            # be amended even once placement was possible -- and repricing a
+            # resting option is the main reason to amend at all.
+            **self._derivatives_fields(request),
         }
         if request.trigger_price is not None:
             body["stoploss"] = str(request.trigger_price)
@@ -558,24 +727,29 @@ class BreezeAdapter(BrokerAdapter):
             raw=data,
         )
 
-    async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
-        # exchange_code is required on DELETE /order and hardcoded to NSE
-        # here, because the adapter interface passes only a broker order id
-        # and this adapter keeps no per-order exchange memory. An NFO order
-        # therefore cannot be cancelled through this method -- the one
-        # situation where cancelling matters most.
-        #
-        # Not fixed here: carrying the exchange would change
-        # BrokerAdapter.cancel_order's signature across all four adapters and
-        # its call site. It is also not currently reachable -- _order_body
-        # omits the expiry/strike/right fields Breeze requires for
-        # derivatives, so no F&O order can be placed through this adapter to
-        # begin with. Both belong in the same change, before F&O is enabled.
+    async def cancel_order(
+        self, broker_order_id: str, exchange: Exchange | None = None
+    ) -> PlaceOrderResult:
+        """Cancel a resting order.
+
+        exchange_code is required on DELETE /order and an order id does not
+        carry it. This used to hardcode NSE, so an NFO order could not be
+        cancelled at all -- the situation where cancelling matters most, since
+        an option position left open through expiry settles against you.
+
+        The caller passes the exchange it recorded at placement. NSE remains
+        the fallback for a caller that has none, which is the old behaviour
+        and correct for the cash segment that is all this adapter could place
+        until now.
+        """
         try:
             data = await self._request(
                 "DELETE",
                 "/order",
-                {"order_id": str(broker_order_id), "exchange_code": Exchange.NSE.value},
+                {
+                    "order_id": str(broker_order_id),
+                    "exchange_code": (exchange or Exchange.NSE).value,
+                },
             )
         except BrokerError as exc:
             raise BrokerError(f"{exc} — {self._STATIC_IP_HINT}") from exc
@@ -628,6 +802,45 @@ class BreezeAdapter(BrokerAdapter):
             if instrument is not None
         ]
 
+    @staticmethod
+    def _contract_fields(cleaned: dict) -> dict:
+        """expiry/strike/right from an F&O security-master row.
+
+        Column names and value formats read off a downloaded
+        FONSEScripMaster.txt, not guessed: ExpiryDate is "29-Sep-2026",
+        StrikePrice is "0" for a future, and OptionType is CE/PE/XX -- which
+        is a THIRD vocabulary, distinct from both the order payload's
+        call/put/others and the tick stream's.
+
+        Everything is None for an equity row, where these columns are absent.
+        """
+        raw_expiry = cleaned.get("expirydate")
+        if not raw_expiry:
+            return {}
+
+        try:
+            expiry = datetime.strptime(raw_expiry, "%d-%b-%Y").date()
+        except ValueError:
+            # A row whose expiry cannot be read cannot identify a contract,
+            # and storing it without one would collide with every other
+            # contract on that symbol.
+            return {}
+
+        right = _MASTER_RIGHT_MAP.get(cleaned.get("optiontype", "").upper())
+        raw_strike = cleaned.get("strikeprice") or "0"
+        try:
+            strike = Decimal(raw_strike)
+        except ArithmeticError:
+            strike = Decimal(0)
+
+        # A future carries strike 0 and right XX. Stored as None/OTHERS rather
+        # than 0/None so "no strike" is not confused with a zero strike.
+        return {
+            "expiry": expiry,
+            "strike": strike if strike > 0 else None,
+            "option_right": right or OptionRight.OTHERS,
+        }
+
     def _instrument_from_row(self, row: dict, exchange_code: str) -> Instrument | None:
         """One security-master row to an Instrument, or None if unusable.
 
@@ -662,7 +875,12 @@ class BreezeAdapter(BrokerAdapter):
                 name=name or None,
                 lot_size=int(float(lot_size)) if lot_size else None,
                 tick_size=Decimal(tick_size) if tick_size else None,
-                instrument_type=cleaned.get("series") or None,
+                # InstrumentName (FUTSTK/OPTIDX/...) in the F&O master, Series
+                # (EQ/BE/...) in the equity one. Whichever the file carries.
+                instrument_type=(
+                    cleaned.get("instrumentname") or cleaned.get("series") or None
+                ),
+                **self._contract_fields(cleaned),
             )
         except (ValueError, ArithmeticError):
             # A malformed row is skipped rather than failing the whole sync:

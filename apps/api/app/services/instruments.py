@@ -11,7 +11,7 @@ one-off import.
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,10 +51,20 @@ async def sync_instruments(
         if not symbol:
             continue
         exchange_value = getattr(instrument.exchange, "value", instrument.exchange)
-        key = (exchange_value, symbol)
+        # The whole contract, not just the symbol. Deduping on the symbol
+        # alone would have collapsed an entire options chain to one row before
+        # the database ever saw it -- Breeze lists 3,350 NIFTY contracts under
+        # that one code -- so every strike and expiry but the first was
+        # discarded here, silently.
+        key = (
+            exchange_value,
+            symbol,
+            instrument.expiry,
+            instrument.strike,
+            instrument.option_right,
+        )
         if key in seen:
-            # The dump can repeat a symbol across segments; the unique
-            # constraint is on (broker, exchange, symbol), so a batch carrying
+            # The dump can still repeat an exact contract; a batch carrying
             # the same key twice would fail the whole statement.
             continue
         seen.add(key)
@@ -74,6 +84,9 @@ async def sync_instruments(
                 "instrument_type": instrument.instrument_type,
                 "lot_size": instrument.lot_size,
                 "tick_size": instrument.tick_size,
+                "expiry": instrument.expiry,
+                "strike": instrument.strike,
+                "option_right": instrument.option_right,
             }
         )
         if len(batch) >= BATCH_SIZE:
@@ -99,10 +112,25 @@ async def sync_instruments(
 
 
 async def _write_batch(db: AsyncSession, rows: list[dict]) -> int:
-    """Upsert one batch, leaving existing ids alone."""
+    """Upsert one batch, leaving existing ids alone.
+
+    The conflict target must match migration 0010's functional unique index
+    expression for expression: a derivatives contract is identified by its
+    expiry, strike and right as well as its symbol, and naming only
+    (broker, exchange, symbol) here would raise
+    "no unique or exclusion constraint matching the ON CONFLICT
+    specification" now that the plain constraint is gone.
+    """
     statement = insert(MarketInstrument).values(rows)
     statement = statement.on_conflict_do_update(
-        index_elements=["broker", "exchange", "symbol"],
+        index_elements=[
+            "broker",
+            "exchange",
+            "symbol",
+            text("COALESCE(expiry, DATE '1900-01-01')"),
+            text("COALESCE(strike, -1)"),
+            text("COALESCE(option_right, '')"),
+        ],
         set_={
             "broker_token": statement.excluded.broker_token,
             "name": statement.excluded.name,

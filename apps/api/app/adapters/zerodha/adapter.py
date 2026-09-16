@@ -383,7 +383,9 @@ class ZerodhaAdapter(BrokerAdapter):
             broker_order_id=str(order_id), status=OrderStatus.SUBMITTED, raw=data
         )
 
-    async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult:
+    async def cancel_order(
+        self, broker_order_id: str, exchange: Exchange | None = None
+    ) -> PlaceOrderResult:
         data = await self._request("DELETE", f"/orders/regular/{broker_order_id}")
         return PlaceOrderResult(
             broker_order_id=str(data.get("order_id")), status=OrderStatus.CANCELLED, raw=data

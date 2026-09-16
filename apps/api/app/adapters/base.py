@@ -5,7 +5,7 @@ from decimal import Decimal
 from app.core.config import BrokerEnvCredentials
 from app.db.models import BrokerAccount
 from app.domain.capabilities import BrokerCapabilities, get_capabilities
-from app.domain.enums import Broker
+from app.domain.enums import Broker, Exchange
 from app.domain.models import (
     BrokerOrder,
     BrokerPosition,
@@ -114,7 +114,16 @@ class BrokerAdapter(ABC):
     ) -> PlaceOrderResult: ...
 
     @abstractmethod
-    async def cancel_order(self, broker_order_id: str) -> PlaceOrderResult: ...
+    async def cancel_order(
+        self, broker_order_id: str, exchange: Exchange | None = None
+    ) -> PlaceOrderResult:
+        """Cancel a resting order.
+
+        `exchange` is optional because most brokers identify an order by id
+        alone, but Breeze requires exchange_code on its cancel endpoint and an
+        order id does not carry it. Adapters that do not need it ignore it.
+        """
+        ...
 
     # ── market data ──────────────────────────────────────────────────
 

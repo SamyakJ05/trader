@@ -138,3 +138,22 @@ class AdapterStatus(StrEnum):
     WORKING = "working"      # implemented and exercised end-to-end
     SCAFFOLD = "scaffold"    # endpoints wired, NOT verified against the real broker
     PLANNED = "planned"
+
+
+class OptionRight(StrEnum):
+    """Which side of an option contract, or neither for a future.
+
+    Broker-neutral: Breeze spells these "call"/"put"/"others" in its order
+    payload, while its security master reports CE/PE/XX, and Kite encodes the
+    right into the tradingsymbol instead. Adapters translate; this is what the
+    platform stores and reasons about.
+
+    OTHERS rather than None for a future, because Breeze requires the field to
+    be present and populated on every F&O order -- an empty string is
+    rejected. Making it explicit here keeps that from being an adapter-level
+    surprise.
+    """
+
+    CALL = "CALL"
+    PUT = "PUT"
+    OTHERS = "OTHERS"

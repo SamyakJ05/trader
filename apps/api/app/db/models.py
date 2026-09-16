@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -330,8 +331,25 @@ class DailyPnl(Base):
 class MarketInstrument(Base):
     __tablename__ = "market_instruments"
     __table_args__ = (
-        UniqueConstraint("broker", "exchange", "symbol"),
+        # A derivatives contract is NOT identified by its symbol: Breeze's F&O
+        # master holds 79,612 contracts under 216 stock codes, NIFTY alone
+        # having 3,350. Uniqueness is therefore on the whole contract, as a
+        # functional index (see migration 0010) rather than a constraint,
+        # because Postgres treats NULLs as distinct and equities carry NULL in
+        # all three contract columns -- COALESCE sentinels keep equities
+        # colliding on (broker, exchange, symbol) as before.
+        Index(
+            "uq_instruments_contract",
+            "broker",
+            "exchange",
+            "symbol",
+            text("COALESCE(expiry, DATE '1900-01-01')"),
+            text("COALESCE(strike, -1)"),
+            text("COALESCE(option_right, '')"),
+            unique=True,
+        ),
         Index("ix_instruments_symbol", "symbol", "exchange"),
+        Index("ix_instruments_chain", "broker", "exchange", "symbol", "expiry"),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -345,6 +363,10 @@ class MarketInstrument(Base):
     tick_size: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     lot_size: Mapped[int | None] = mapped_column(Integer)
     expiry: Mapped[date | None] = mapped_column(Date)
+    strike: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    # "option_right", not "right": RIGHT is a reserved SQL keyword and would
+    # need quoting in every hand-written query.
+    option_right: Mapped[str | None] = mapped_column(String(8))
 
 
 class RiskRule(Base):

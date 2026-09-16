@@ -143,7 +143,10 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         order_postbacks=False,
         amo_orders=False,
         bracket_gtt=False,
-        exchanges=["NSE", "BSE", "NFO"],
+        # BSE removed: ICICI's own API documentation states "securities listed
+        # on BSE and MCX are not available on Breeze API". Advertising it
+        # offered users a segment every order would have been rejected on.
+        exchanges=["NSE", "NFO"],
         notes="Adapter scaffolded with Breeze checksum auth wiring. NOT verified "
         "against a live account. Market coverage narrower than Zerodha (no MCX "
         "in Breeze API as documented). Breeze uses its own stock codes rather "
