@@ -16,6 +16,7 @@ mapped to OpenAI function-calling internally.
 """
 
 import json
+import os
 import uuid as uuid_mod
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -104,11 +105,29 @@ class AnthropicLLM:
         self.model = model
         self._anthropic = anthropic
         if provider == "bedrock":
-            self._client = anthropic.AsyncAnthropicBedrock(
-                aws_access_key=aws_access_key_id,
-                aws_secret_key=aws_secret_access_key,
-                aws_region=region or "us-east-1",
-            )
+            # Bedrock takes either form of credential:
+            #
+            #   - an Amazon Bedrock API key (a bearer token, generated in the
+            #     Bedrock console) passed as api_key, which the SDK sends as a
+            #     bearer header. This is the simpler path: one value, no IAM
+            #     user, and what the console hands you by default.
+            #   - IAM access key + secret, signed with SigV4 via botocore.
+            #
+            # The bearer token wins when present because an operator who
+            # generated one has chosen it deliberately; falling through to
+            # SigV4 with half-configured IAM values would fail in a way that
+            # points at the wrong credential.
+            if api_key:
+                self._client = anthropic.AsyncAnthropicBedrock(
+                    api_key=api_key,
+                    aws_region=region or "us-east-1",
+                )
+            else:
+                self._client = anthropic.AsyncAnthropicBedrock(
+                    aws_access_key=aws_access_key_id,
+                    aws_secret_key=aws_secret_access_key,
+                    aws_region=region or "us-east-1",
+                )
         else:
             self._client = anthropic.AsyncAnthropic(api_key=api_key)
 
@@ -314,7 +333,11 @@ def build_credentials_blob(
     region: str | None = None,
 ) -> str:
     if provider == "bedrock":
+        # api_key carries a Bedrock API key (bearer token) when the operator
+        # uses one instead of an IAM pair. Both are stored so switching
+        # between them does not require re-entering the region.
         creds = {
+            "api_key": api_key,
             "aws_access_key_id": aws_access_key_id,
             "aws_secret_access_key": aws_secret_access_key,
             "region": region,
@@ -332,6 +355,7 @@ def _client_from_row(row: AISettings) -> LLMClient | None:
         return AnthropicLLM(
             model=row.model,
             provider="bedrock",
+            api_key=creds.get("api_key"),
             aws_access_key_id=creds.get("aws_access_key_id"),
             aws_secret_access_key=creds.get("aws_secret_access_key"),
             region=creds.get("region"),
@@ -353,7 +377,7 @@ async def get_ai_settings(db: AsyncSession, user_id: uuid_mod.UUID) -> AISetting
 
 
 async def resolve_llm(db: AsyncSession, user_id: uuid_mod.UUID) -> LLMClient | None:
-    """User's configured provider, falling back to the env ANTHROPIC_API_KEY."""
+    """User's configured provider, falling back to environment credentials."""
     row = await get_ai_settings(db, user_id)
     if row is not None:
         client = _client_from_row(row)
@@ -362,4 +386,16 @@ async def resolve_llm(db: AsyncSession, user_id: uuid_mod.UUID) -> LLMClient | N
     settings = get_settings()
     if settings.anthropic_api_key:
         return AnthropicLLM(model=settings.ai_model, api_key=settings.anthropic_api_key)
+    # AWS_BEARER_TOKEN_BEDROCK is the variable the Bedrock console tells you to
+    # export, and the one the anthropic SDK reads by convention. Honouring it
+    # means an operator who followed AWS's own instructions gets a working
+    # provider without configuring anything here.
+    bedrock_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+    if bedrock_token:
+        return AnthropicLLM(
+            model=DEFAULT_MODELS["bedrock"],
+            provider="bedrock",
+            api_key=bedrock_token,
+            region=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+        )
     return None

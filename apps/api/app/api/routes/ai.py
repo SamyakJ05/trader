@@ -105,11 +105,26 @@ async def write_settings(body: AISettingsBody, user: VerifiedUser, db: DbSession
             f"Unknown provider {body.provider!r}; supported: {list(PROVIDERS)}",
         )
     if body.provider == "bedrock":
-        if not (body.aws_access_key_id and body.aws_secret_access_key and body.region):
+        # Bedrock accepts either credential form: an Amazon Bedrock API key
+        # (a bearer token from the Bedrock console) or an IAM access key pair
+        # signed with SigV4. Requiring the IAM pair rejected the simpler one,
+        # which is what the console hands you by default.
+        if not body.region:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "Bedrock needs aws_access_key_id, aws_secret_access_key and region",
+                "Bedrock needs a region (for example us-east-1)",
             )
+        has_bearer = bool(body.api_key)
+        has_iam = bool(body.aws_access_key_id and body.aws_secret_access_key)
+        if not (has_bearer or has_iam):
+            existing = await get_ai_settings(db, user.id)
+            # Allow a model or region change without re-entering credentials.
+            if existing is None or existing.provider != "bedrock" or not existing.credentials_enc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "Bedrock needs either an Amazon Bedrock API key, or an IAM "
+                    "access key id and secret access key.",
+                )
     elif not body.api_key:
         row = await get_ai_settings(db, user.id)
         # Allow model/base_url updates without re-entering the key.
@@ -126,7 +141,14 @@ async def write_settings(body: AISettingsBody, user: VerifiedUser, db: DbSession
     row.base_url = body.base_url or (
         OPENROUTER_BASE_URL if body.provider == "openrouter" else None
     )
-    if body.api_key or body.provider == "bedrock":
+    # Only rewrite credentials when some were supplied. For bedrock this used
+    # to rewrite unconditionally, so changing just the model or region blanked
+    # a stored key and the next call failed on credentials the operator
+    # believed were still there.
+    supplied = bool(
+        body.api_key or (body.aws_access_key_id and body.aws_secret_access_key)
+    )
+    if supplied:
         row.credentials_enc = build_credentials_blob(
             body.provider,
             body.api_key,

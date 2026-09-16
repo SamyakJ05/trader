@@ -18,6 +18,7 @@ const KEY_PLACEHOLDERS: Record<string, string> = {
   anthropic: "sk-ant-…",
   openai: "sk-…",
   openrouter: "sk-or-…",
+  bedrock: "Bedrock API key (ABSK…)",
 };
 
 export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
@@ -59,8 +60,10 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
           model: model || settings?.default_models?.[provider] || "",
           base_url: provider === "openrouter" || provider === "openai" ? baseUrl || null : null,
           api_key: apiKey || null,
-          aws_access_key_id: provider === "bedrock" ? awsKeyId : null,
-          aws_secret_access_key: provider === "bedrock" ? awsSecret : null,
+          // Empty strings would read as "supplied but blank" at the API and
+          // overwrite a stored credential with nothing.
+          aws_access_key_id: provider === "bedrock" ? awsKeyId || null : null,
+          aws_secret_access_key: provider === "bedrock" ? awsSecret || null : null,
           region: provider === "bedrock" ? region : null,
         }),
       });
@@ -145,19 +148,31 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
           />
         </div>
 
-        {!isBedrock && (
-          <div>
-            <label className={labelClass}>API key {configured && "(leave blank to keep)"}</label>
-            <input
-              type="password"
-              autoComplete="off"
-              className={inputClass}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={KEY_PLACEHOLDERS[provider] ?? "api key"}
-            />
-          </div>
-        )}
+        {/* Bedrock shows this too: an Amazon Bedrock API key (a bearer token
+            from the Bedrock console) is a complete credential on its own and
+            is what the console hands you by default. The IAM fields below
+            remain for accounts using an access key pair instead. */}
+        <div>
+          <label className={labelClass}>
+            {isBedrock ? "Bedrock API key" : "API key"}{" "}
+            {configured && "(leave blank to keep)"}
+          </label>
+          <input
+            type="password"
+            autoComplete="off"
+            className={inputClass}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={KEY_PLACEHOLDERS[provider] ?? "api key"}
+          />
+          {isBedrock && (
+            <p className="mt-1 text-xs text-ink-faint">
+              From Bedrock → API keys. Use this <em>or</em> the IAM pair below,
+              not both. A key here is simplest; IAM is for accounts that
+              require it.
+            </p>
+          )}
+        </div>
 
         {(provider === "openrouter" || provider === "openai") && (
           <div className="sm:col-span-2">
@@ -174,7 +189,7 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
         {isBedrock && (
           <>
             <div>
-              <label className={labelClass}>AWS access key ID</label>
+              <label className={labelClass}>AWS access key ID (optional)</label>
               <input
                 type="password"
                 autoComplete="off"

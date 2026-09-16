@@ -71,3 +71,93 @@ def test_other_providers_get_no_bedrock_hint():
     wrong way entirely."""
     assert _provider_hint("anthropic", "401 invalid x-api-key") is None
     assert _provider_hint("openai", "429 rate limit") is None
+
+
+# ── the bearer-token credential ──────────────────────────────────────
+
+
+def test_a_bedrock_api_key_is_a_complete_credential():
+    """An Amazon Bedrock API key is a bearer token, and the SDK's api_key
+    parameter is exactly that for the Bedrock client.
+
+    I originally reported this as unsupported after reading the constructor's
+    parameter names, which list aws_access_key/aws_secret_key/aws_region. The
+    api_key parameter is there too and falls back to AWS_BEARER_TOKEN_BEDROCK
+    -- so the platform was refusing a credential it could always have used.
+    """
+    import inspect
+
+    import anthropic
+
+    source = inspect.getsource(anthropic.AsyncAnthropicBedrock.__init__)
+    assert "AWS_BEARER_TOKEN_BEDROCK" in source
+
+
+def test_the_client_prefers_a_bearer_token_over_iam(monkeypatch):
+    """An operator who generated a Bedrock API key chose it deliberately.
+    Falling through to SigV4 with half-configured IAM values would fail in a
+    way that points at the wrong credential."""
+    from app.services.ai.llm import AnthropicLLM
+
+    captured = {}
+
+    class FakeBedrock:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropicBedrock", FakeBedrock)
+
+    AnthropicLLM(
+        model="anthropic.claude-opus-5",
+        provider="bedrock",
+        api_key="ABSKtoken",
+        aws_access_key_id="AKIA-ignored",
+        aws_secret_access_key="ignored",
+        region="ap-south-1",
+    )
+    assert captured.get("api_key") == "ABSKtoken"
+    assert "aws_access_key" not in captured
+    assert captured.get("aws_region") == "ap-south-1"
+
+
+def test_iam_credentials_still_work_when_no_token_is_given(monkeypatch):
+    from app.services.ai.llm import AnthropicLLM
+
+    captured = {}
+
+    class FakeBedrock:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropicBedrock", FakeBedrock)
+
+    AnthropicLLM(
+        model="anthropic.claude-opus-5",
+        provider="bedrock",
+        aws_access_key_id="AKIAEXAMPLE",
+        aws_secret_access_key="secret",
+        region="us-east-1",
+    )
+    assert captured.get("aws_access_key") == "AKIAEXAMPLE"
+    assert captured.get("api_key") is None or "api_key" not in captured
+
+
+def test_a_bearer_token_survives_a_round_trip_through_storage():
+    """Credentials are Fernet-encrypted as a JSON blob. A token dropped on the
+    way in or out would fail later as an auth error, pointing at AWS rather
+    than at us."""
+    import json
+
+    from app.core.security import decrypt_secret
+    from app.services.ai.llm import build_credentials_blob
+
+    blob = build_credentials_blob(
+        "bedrock", "ABSKtoken", None, None, "ap-south-1"
+    )
+    creds = json.loads(decrypt_secret(blob))
+    assert creds["api_key"] == "ABSKtoken"
+    assert creds["region"] == "ap-south-1"
