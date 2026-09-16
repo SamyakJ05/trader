@@ -33,6 +33,12 @@ from app.engines.strategy.base import (
     StrategyBase,
     StrategyContext,
 )
+from app.engines.strategy.indicator_strategies import (
+    AtrChannelBreakout,
+    BollingerBreakout,
+    MacdCrossover,
+    RsiMeanReversion,
+)
 from app.engines.strategy.sma_crossover import SmaCrossover
 from app.services import audit, killswitch, quotes
 from app.services import orders as order_service
@@ -42,6 +48,10 @@ logger = get_logger(__name__)
 
 STRATEGY_REGISTRY: dict[str, StrategyBase] = {
     SmaCrossover.kind: SmaCrossover(),
+    RsiMeanReversion.kind: RsiMeanReversion(),
+    MacdCrossover.kind: MacdCrossover(),
+    BollingerBreakout.kind: BollingerBreakout(),
+    AtrChannelBreakout.kind: AtrChannelBreakout(),
     AiAgentStrategy.kind: AiAgentStrategy(),
 }
 

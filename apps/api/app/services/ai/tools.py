@@ -22,8 +22,12 @@ from app.db.models import (
     Strategy,
 )
 from app.domain.enums import AuditEventType, Broker, OrderSide, OrderType, ProductType
+from app.engines.market.candles import history as candle_history
 from app.engines.paper import market_sim
+from app.engines.strategy.base import Bar
+from app.engines.strategy.indicators import atr, bollinger, macd, rsi, sma
 from app.services import audit, quotes
+from app.workers.tick_stream import LIVE_SOURCE, LIVE_SOURCES
 
 TOOLS: list[dict] = [
     {
@@ -71,6 +75,32 @@ TOOLS: list[dict] = [
                 }
             },
             "required": ["symbols"],
+        },
+    },
+    {
+        "name": "get_indicators",
+        "description": (
+            "Technical indicators for a symbol, computed from stored candles: "
+            "RSI, MACD, Bollinger bands, ATR, and moving averages. Prefer this "
+            "over reasoning about raw prices -- these are the same "
+            "implementations the rule-based strategies trade on, so a reading "
+            "quoted here matches what they would act on. A value is null when "
+            "there is not enough history for it, which means unknown, NOT "
+            "neutral: do not treat a null RSI as 50."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "NSE trading symbol, e.g. RELIANCE",
+                },
+                "interval": {
+                    "type": "string",
+                    "description": "Candle interval, default 1m",
+                },
+            },
+            "required": ["symbol"],
         },
     },
     {
@@ -301,6 +331,65 @@ async def run_tool(
             )
         return json.dumps(
             {"holdings": snap.holdings, "as_of": snap.ts.isoformat()}, default=str
+        )
+
+    if name == "get_indicators":
+        symbol = str(args.get("symbol", "")).strip().upper()
+        if not symbol:
+            raise ToolError("symbol is required")
+        interval = str(args.get("interval") or "1m")
+        is_live = account.environment != "paper"
+        source = (
+            LIVE_SOURCES.get(account.broker, LIVE_SOURCE) if is_live else "simulator"
+        )
+        # Enough for the longest indicator here (MACD needs slow + signal),
+        # with headroom so a reading is smoothed rather than seed-only.
+        candles = await candle_history(db, symbol, "NSE", interval, source, 120)
+        closes = [c.close for c in candles]
+        bars = [
+            Bar(open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume)
+            for c in candles
+        ]
+
+        macd_values = macd(closes)
+        bands = bollinger(closes)
+        # str() not float(): these are Decimals, and rendering them through a
+        # binary float would reintroduce the representation error the
+        # indicator module exists to avoid.
+        return json.dumps(
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "candles_available": len(closes),
+                "source": source,
+                "last_close": str(closes[-1]) if closes else None,
+                "rsi_14": str(rsi(closes)) if rsi(closes) is not None else None,
+                "macd": (
+                    {
+                        "line": str(macd_values[0]),
+                        "signal": str(macd_values[1]),
+                        "histogram": str(macd_values[2]),
+                    }
+                    if macd_values
+                    else None
+                ),
+                "bollinger": (
+                    {
+                        "lower": str(bands[0]),
+                        "middle": str(bands[1]),
+                        "upper": str(bands[2]),
+                    }
+                    if bands
+                    else None
+                ),
+                "atr_14": str(atr(bars)) if atr(bars) is not None else None,
+                "sma_20": str(sma(closes, 20)) if sma(closes, 20) is not None else None,
+                "sma_50": str(sma(closes, 50)) if sma(closes, 50) is not None else None,
+                "note": (
+                    "A null value means insufficient history, not a neutral "
+                    "reading."
+                ),
+            }
         )
 
     if name == "get_orders":
