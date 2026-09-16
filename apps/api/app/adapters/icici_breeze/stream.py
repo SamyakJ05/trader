@@ -227,7 +227,7 @@ class BreezeTickStream:
         if isinstance(payload, dict):
             # Not a quote tick. Ignored rather than guessed at.
             return None
-        if not isinstance(payload, (list, tuple)) or len(payload) <= _IX_LAST:
+        if not isinstance(payload, list | tuple) or len(payload) <= _IX_LAST:
             return None
 
         # The room name is the only instrument identity a tick carries.
