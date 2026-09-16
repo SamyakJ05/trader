@@ -193,6 +193,41 @@ async def test_settings(user: VerifiedUser, db: DbSession):
         }
 
 
+@router.get("/settings/bedrock-models")
+async def bedrock_models(user: VerifiedUser, db: DbSession):
+    """The model ids THIS account can call, asked of AWS.
+
+    Exists because every other way of getting an id is transcription from a
+    console page, and the two ways that goes wrong -- copying the card title,
+    or copying the bare id where only the cross-region profile works -- fail
+    with messages that name no fix ("not available for this account", "the
+    provided model identifier is invalid").
+    """
+    llm = await resolve_llm(db, user.id)
+    if llm is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AI is not configured")
+    if llm.provider != "bedrock":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Model listing is Bedrock-only; other providers publish a fixed list.",
+        )
+    lister = getattr(llm, "list_models", None)
+    if lister is None:
+        # A Claude-on-Bedrock client goes through the Anthropic SDK, which has
+        # no listing call. Route through Converse purely to ask.
+        from app.services.ai.bedrock_converse import BedrockConverseLLM
+
+        lister = BedrockConverseLLM(
+            model=llm.model,
+            api_key=getattr(llm, "_api_key", None),
+            region=getattr(llm, "_region", None),
+        ).list_models
+    try:
+        return {"models": await lister()}
+    except LLMError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)[:300]) from e
+
+
 # A real Bedrock model id is vendor.name-vNUMBER:NUMBER, optionally prefixed
 # with a region for a cross-region inference profile. The console's card
 # TITLE ("GPT-6 Astra") is not an id, and typing it produces exactly the
@@ -260,13 +295,21 @@ def _provider_hint(provider: str, error: str) -> str | None:
             "with bedrock:InvokeModel, not a Claude API key — check the key, "
             "the secret and the region all belong to the same account."
         )
+    if "model identifier is invalid" in lowered:
+        # Distinct from "not available for this account": AWS did not even
+        # recognise the string as an id, so this is never an access problem.
+        return (
+            "AWS did not recognise that string as a model id at all — this is "
+            "not an access problem, so requesting access will not fix it. Use "
+            "'List models' to pull the ids your account can actually call."
+        )
     if "validation" in lowered or "model" in lowered:
         return (
-            "AWS rejected the model id. Recent Claude models on Bedrock are "
-            "addressed as region-prefixed inference profiles "
-            "(us.anthropic.… / eu.anthropic.…) rather than the bare "
-            "anthropic.… id, and the model must be enabled for your account "
-            "in the Bedrock console for the region you selected."
+            "AWS rejected the model id. Many models are addressable only as a "
+            "region-prefixed inference profile (us.… / eu.… / apac.…) rather "
+            "than the bare vendor id, and the model must be enabled for your "
+            "account in the region you selected. Use 'List models' to pull "
+            "the exact ids your account can call."
         )
     if "accessdenied" in lowered:
         return (

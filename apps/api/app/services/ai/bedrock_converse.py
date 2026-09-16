@@ -113,6 +113,78 @@ class BedrockConverseLLM:
                 aws_secret_access_key=aws_secret_access_key,
             )
 
+    # ── discovery ────────────────────────────────────────────────────
+
+    async def list_models(self) -> list[dict]:
+        """Model ids this account can actually call, from AWS itself.
+
+        The console shows a card TITLE ("GPT-6 Astra") next to the id, and
+        typing the title produces a ValidationException that names no fix.
+        Asking AWS removes the transcription step entirely.
+
+        Two calls, because they return different things and Converse takes
+        both. ListFoundationModels gives the base ids; ListInferenceProfiles
+        gives the region-prefixed cross-region profiles (us.…), which for
+        several recent models are the ONLY form Converse accepts -- the bare
+        id is rejected even when the model is enabled.
+        """
+
+        def _fetch() -> list[dict]:
+            # A separate client: these are control-plane calls on "bedrock",
+            # not "bedrock-runtime".
+            import boto3
+
+            control = boto3.client("bedrock", region_name=self._region)
+            found: dict[str, dict] = {}
+
+            try:
+                for m in control.list_foundation_models().get("modelSummaries", []):
+                    model_id = m.get("modelId")
+                    # TEXT-only. Converse cannot drive an image or embedding
+                    # model, so offering one would only produce a later error.
+                    if not model_id or "TEXT" not in (m.get("outputModalities") or []):
+                        continue
+                    found[model_id] = {
+                        "id": model_id,
+                        "name": m.get("modelName") or model_id,
+                        "provider": m.get("providerName") or "",
+                        "kind": "foundation",
+                    }
+            except Exception as e:  # Reported to the caller, not raised.
+                logger.warning("bedrock.list_foundation_models_failed", error=str(e))
+
+            try:
+                paginator = control.get_paginator("list_inference_profiles")
+                for page in paginator.paginate():
+                    for p in page.get("inferenceProfileSummaries", []):
+                        profile_id = p.get("inferenceProfileId")
+                        if not profile_id:
+                            continue
+                        found[profile_id] = {
+                            "id": profile_id,
+                            "name": p.get("inferenceProfileName") or profile_id,
+                            "provider": "",
+                            "kind": "inference-profile",
+                        }
+            except Exception as e:  # Reported to the caller, not raised.
+                logger.warning("bedrock.list_inference_profiles_failed", error=str(e))
+
+            if not found:
+                raise LLMError(
+                    "Could not list Bedrock models. The credentials need "
+                    "bedrock:ListFoundationModels and "
+                    "bedrock:ListInferenceProfiles, which a Bedrock API key "
+                    "scoped only to InvokeModel does not carry."
+                )
+            # Profiles first: where both forms exist, the profile is the one
+            # that works.
+            return sorted(
+                found.values(),
+                key=lambda m: (m["kind"] != "inference-profile", m["id"]),
+            )
+
+        return await asyncio.to_thread(_fetch)
+
     # ── message translation ──────────────────────────────────────────
 
     @staticmethod

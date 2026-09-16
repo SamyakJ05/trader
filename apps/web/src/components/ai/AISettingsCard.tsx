@@ -21,6 +21,13 @@ const KEY_PLACEHOLDERS: Record<string, string> = {
   bedrock: "Bedrock API key (ABSK…)",
 };
 
+type BedrockModel = {
+  id: string;
+  name: string;
+  provider: string;
+  kind: string;
+};
+
 export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
   const { data: settings, reload } = useApi<AISettingsInfo>("/ai/settings");
   const { push } = useToast();
@@ -34,6 +41,8 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
   const [region, setRegion] = useState("us-east-1");
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [models, setModels] = useState<BedrockModel[] | null>(null);
+  const [listing, setListing] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
@@ -77,6 +86,27 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
       push("error", err instanceof Error ? err.message : "Failed to save settings");
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Asks AWS which ids this account can call. Every other route to an id is
+  // transcription from a console page, and both ways that goes wrong --
+  // copying the card title, or copying a bare id where only the cross-region
+  // profile works -- fail with messages that name no fix.
+  async function listModels() {
+    setListing(true);
+    try {
+      const res = await api<{ models: BedrockModel[] }>("/ai/settings/bedrock-models");
+      setModels(res.models);
+      setTestError(null);
+      if (res.models.length === 0) {
+        push("error", "No models returned — check the region");
+      }
+    } catch (err) {
+      setModels(null);
+      setTestError(err instanceof Error ? err.message : "Could not list models");
+    } finally {
+      setListing(false);
     }
   }
 
@@ -146,6 +176,33 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
             onChange={(e) => setModel(e.target.value)}
             placeholder={settings?.default_models?.[provider] ?? "model id"}
           />
+          {isBedrock && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={listModels}
+                disabled={listing || !configured}
+                className="text-xs text-accent underline-offset-2 hover:underline disabled:text-ink-faint disabled:no-underline"
+              >
+                {listing ? "Listing…" : "List models my account can call"}
+              </button>
+              {models && (
+                <select
+                  className={`${inputClass} num mt-2`}
+                  value={models.some((m) => m.id === model) ? model : ""}
+                  onChange={(e) => setModel(e.target.value)}
+                >
+                  <option value="">Select a model…</option>
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.id}
+                      {m.kind === "inference-profile" ? " (cross-region)" : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Bedrock shows this too: an Amazon Bedrock API key (a bearer token
@@ -169,9 +226,8 @@ export function AISettingsCard({ onSaved }: { onSaved: () => void }) {
             <p className="mt-1 text-xs text-ink-faint">
               From Bedrock → API keys. Use this <em>or</em> the IAM pair below,
               not both. A key here is simplest; IAM is for accounts that
-              require it. Any model your account has access to works —
-              Claude, Nova, Llama, Mistral, Cohere — put its exact Model ID
-              above.
+              require it. Save the key first, then use List models to pick a
+              Model ID your account can actually call.
             </p>
           )}
         </div>
