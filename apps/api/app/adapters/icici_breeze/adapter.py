@@ -884,9 +884,15 @@ class BreezeAdapter(BrokerAdapter):
         stock_code = cleaned.get("shortname")
         if not stock_code:
             return None
-        nse_symbol = cleaned.get("symbol")
+        # The NSE master has NO Symbol column -- its header is Token,
+        # ShortName, Series, CompanyName, ticksize, Lotsize, ..., ISINCode.
+        # This read "symbol" and always got nothing, so the name rendered as
+        # the company alone and the NSE ticker was never captured at all.
+        # ISINCode is what the file actually provides, and it is the better
+        # identifier anyway: it is the same at every broker, where a ticker
+        # is not.
         company = cleaned.get("companyname")
-        name = f"{company} ({nse_symbol})" if company and nse_symbol else company or nse_symbol
+        name = company or stock_code
         lot_size = cleaned.get("lotsize")
         tick_size = cleaned.get("ticksize")
         try:
@@ -902,6 +908,7 @@ class BreezeAdapter(BrokerAdapter):
                 instrument_type=(
                     cleaned.get("instrumentname") or cleaned.get("series") or None
                 ),
+                isin=cleaned.get("isincode") or None,
                 **self._contract_fields(cleaned),
             )
         except (ValueError, ArithmeticError):

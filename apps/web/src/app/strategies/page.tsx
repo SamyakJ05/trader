@@ -6,6 +6,7 @@ import { Button, Card, EmptyState, PageHeader, Pill, Skeleton } from "@/componen
 import { IconSpark } from "@/components/icons";
 import { GenerateStrategyModal } from "@/components/ai/GenerateStrategyModal";
 import { CreateStrategyModal } from "@/components/strategy/CreateStrategyModal";
+import { BacktestModal } from "@/components/strategy/BacktestModal";
 import { useToast } from "@/components/toast";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
@@ -18,6 +19,7 @@ export default function StrategiesPage() {
   const { push } = useToast();
   const [generateOpen, setGenerateOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [backtesting, setBacktesting] = useState<Strategy | null>(null);
   const { data: kinds } = useApi<{ kinds: string[] }>("/strategies/kinds");
 
   async function act(id: string, action: "start" | "stop") {
@@ -107,6 +109,9 @@ export default function StrategiesPage() {
                     Stop
                   </Button>
                 )}
+                <Button size="sm" onClick={() => setBacktesting(s)}>
+                  Backtest
+                </Button>
                 {s.killed ? (
                   <Button size="sm" onClick={() => kill(s.id, false)}>
                     Release kill
@@ -136,6 +141,8 @@ export default function StrategiesPage() {
           }
         />
       )}
+
+      <BacktestModal strategy={backtesting} onClose={() => setBacktesting(null)} />
 
       <CreateStrategyModal
         open={createOpen}

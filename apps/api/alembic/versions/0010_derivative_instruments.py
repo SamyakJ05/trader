@@ -49,7 +49,16 @@ def upgrade() -> None:
         """
         ALTER TABLE market_instruments
             ADD COLUMN IF NOT EXISTS strike NUMERIC(18, 4),
-            ADD COLUMN IF NOT EXISTS option_right VARCHAR(8)
+            ADD COLUMN IF NOT EXISTS option_right VARCHAR(8),
+            ADD COLUMN IF NOT EXISTS isin VARCHAR(16)
+        """
+    )
+    # ISIN is how a broker's private code is matched to anything outside that
+    # broker -- Breeze's RELIND to the RELIANCE history a backtest reads.
+    op.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_instruments_isin
+        ON market_instruments (isin)
         """
     )
     # A proposal is approved into an order, so it has to carry the contract
@@ -129,6 +138,7 @@ def downgrade() -> None:
             DROP COLUMN IF EXISTS option_right
         """
     )
+    op.execute("DROP INDEX IF EXISTS ix_instruments_isin")
     op.execute("DROP INDEX IF EXISTS ix_instruments_chain")
     op.execute("DROP INDEX IF EXISTS uq_instruments_contract")
     # Restoring the old constraint would fail wherever F&O rows have already
@@ -161,6 +171,7 @@ def downgrade() -> None:
         """
         ALTER TABLE market_instruments
             DROP COLUMN IF EXISTS strike,
-            DROP COLUMN IF EXISTS option_right
+            DROP COLUMN IF EXISTS option_right,
+            DROP COLUMN IF EXISTS isin
         """
     )

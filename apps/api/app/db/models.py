@@ -374,6 +374,10 @@ class MarketInstrument(Base):
     # "option_right", not "right": RIGHT is a reserved SQL keyword and would
     # need quoting in every hand-written query.
     option_right: Mapped[str | None] = mapped_column(String(8))
+    # Exchange identifier, indexed because it is how one broker's instrument
+    # is matched to another's -- or to imported history stored under an NSE
+    # ticker the broker never uses.
+    isin: Mapped[str | None] = mapped_column(String(16), index=True)
 
 
 class RiskRule(Base):

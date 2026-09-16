@@ -87,6 +87,7 @@ async def sync_instruments(
                 "expiry": instrument.expiry,
                 "strike": instrument.strike,
                 "option_right": instrument.option_right,
+                "isin": instrument.isin,
             }
         )
         if len(batch) >= BATCH_SIZE:
@@ -137,6 +138,7 @@ async def _write_batch(db: AsyncSession, rows: list[dict]) -> int:
             "instrument_type": statement.excluded.instrument_type,
             "lot_size": statement.excluded.lot_size,
             "tick_size": statement.excluded.tick_size,
+            "isin": statement.excluded.isin,
         },
     )
     await db.execute(statement)
@@ -225,3 +227,46 @@ async def unknown_symbols(
         )
         return []
     return [s for s in symbols if s not in known_set]
+
+
+async def history_symbol(
+    db: AsyncSession, *, broker: str, symbol: str, exchange: str = "NSE"
+) -> str | None:
+    """The symbol that imported market history is stored under, for a symbol
+    named in one broker's own codes.
+
+    Brokers use private codes -- Breeze's RELIND is the NSE's RELIANCE -- and
+    imported history is keyed by the NSE ticker. Without this a Breeze
+    strategy cannot be backtested at all: its symbols match no candle.
+
+    The bridge is the ISIN, which is the same at every venue. Returns None
+    when no mapping exists rather than guessing; a backtest against the wrong
+    instrument is worse than no backtest.
+    """
+    row = (
+        await db.execute(
+            select(MarketInstrument.isin).where(
+                MarketInstrument.broker == broker,
+                MarketInstrument.exchange == exchange,
+                MarketInstrument.symbol == symbol,
+                MarketInstrument.isin.isnot(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        # Nothing to translate through. The symbol may already be the one
+        # history uses -- which is the case for Kite, whose codes are NSE
+        # tickers -- so it is handed back unchanged rather than refused.
+        return symbol
+
+    # Any other broker's row carrying the same ISIN names the same security.
+    match = (
+        await db.execute(
+            select(MarketInstrument.symbol).where(
+                MarketInstrument.isin == row,
+                MarketInstrument.exchange == exchange,
+                MarketInstrument.broker != broker,
+            )
+        )
+    ).scalars().first()
+    return match or symbol

@@ -139,6 +139,13 @@ class Instrument(BaseModel):
     strike: Decimal | None = None
     option_right: OptionRight | None = None
 
+    # The exchange's own identifier for the security, where the broker
+    # publishes it. This is the only reliable bridge between brokers: each
+    # uses private codes (Breeze's RELIND, Kite's RELIANCE) and an ISIN is
+    # the same everywhere, so it is how a Breeze holding is matched to
+    # imported market history.
+    isin: str | None = None
+
 
 class Tick(BaseModel):
     symbol: str
