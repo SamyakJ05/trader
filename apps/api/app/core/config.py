@@ -29,6 +29,20 @@ class Settings(BaseSettings):
 
     enable_live_trading: bool = False
 
+    # Paper trading. Off means: no new paper accounts, existing ones accept no
+    # orders, and their strategies are not evaluated -- the simulator becomes
+    # read-only history rather than a place trades happen.
+    #
+    # The paper ENGINE stays in the codebase and stays imported: the backtester
+    # depends on its charge model, its ledger arithmetic and its fill
+    # accounting, so disabling the engine itself would take backtesting down
+    # with it. This flag governs paper ACCOUNTS, not the machinery they share.
+    #
+    # Note this does not make live trading possible on its own. A live order
+    # still needs ENABLE_LIVE_TRADING, the account's live_enabled, and an
+    # adapter whose status is WORKING -- which no real broker has yet.
+    enable_paper_trading: bool = True
+
     # The outbound IP registered with the broker for transactional requests.
     # Logged and compared at startup so a mismatch surfaces before an order
     # is rejected for it. Purely diagnostic — it gates nothing.

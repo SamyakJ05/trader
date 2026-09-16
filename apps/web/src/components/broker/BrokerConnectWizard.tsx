@@ -5,6 +5,7 @@ import { Button, ErrorNote, Modal, Pill, inputClass, labelClass } from "../ui";
 import { IconCheck, IconCopy } from "../icons";
 import { useToast } from "../toast";
 import { api } from "@/lib/api";
+import { useApi } from "@/lib/useApi";
 import { BrokerAccount, BrokerCapabilities } from "@/lib/types";
 
 type TokenFlow = "none" | "redirect" | "paste";
@@ -66,6 +67,16 @@ export function BrokerConnectWizard({
   onDone: () => void;
 }) {
   const { push } = useToast();
+  // A live-only instance refuses to create paper accounts, so offering one is
+  // offering a 409. The flag comes from the server rather than being inferred
+  // from the account list: having no paper accounts left is not the same as
+  // refusing to make them.
+  const { data: config } = useApi<{ paper_trading_enabled: boolean }>("/system/config");
+  const paperEnabled = config?.paper_trading_enabled !== false;
+  const brokers = paperEnabled
+    ? BROKER_ORDER
+    : BROKER_ORDER.filter((b) => b !== "paper");
+
   const [step, setStep] = useState<Step>("broker");
   const [broker, setBroker] = useState("paper");
   const [label, setLabel] = useState("");
@@ -78,11 +89,17 @@ export function BrokerConnectWizard({
   const [token, setTokenValue] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Without this the wizard opens on "paper" and submits it, because the
+  // default is set before the config arrives.
+  useEffect(() => {
+    if (!paperEnabled && broker === "paper") setBroker(brokers[0]);
+  }, [paperEnabled, broker, brokers]);
+
   const setup = SETUP[broker];
 
   function reset() {
     setStep("broker");
-    setBroker("paper");
+    setBroker(paperEnabled ? "paper" : brokers[0]);
     setLabel("");
     setRef("");
     setError(null);
@@ -223,7 +240,7 @@ export function BrokerConnectWizard({
 
       {step === "broker" && (
         <div className="space-y-2">
-          {BROKER_ORDER.map((b) => {
+          {brokers.map((b) => {
             const caps = capabilities?.[b];
             const active = broker === b;
             return (

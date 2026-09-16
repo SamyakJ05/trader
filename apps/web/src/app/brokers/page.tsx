@@ -229,7 +229,7 @@ export default function BrokersPage() {
       ) : (
         <EmptyState
           title="No broker connections"
-          hint="Start with the paper simulator — one click, virtual cash, no credentials."
+          hint="Connect a broker account to begin."
           action={
             <Button variant="primary" onClick={() => setWizardOpen(true)}>
               Connect broker

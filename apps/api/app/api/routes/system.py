@@ -95,6 +95,10 @@ async def system_config(user: VerifiedUser):
     return {
         "live_trading_enabled": settings.enable_live_trading,
         "market_hours_enforced": settings.market_hours_enforced,
+        # The UI hides paper affordances when this is off. Reported rather
+        # than inferred from the account list: an instance with no paper
+        # accounts left is not the same as one that refuses to make them.
+        "paper_trading_enabled": settings.enable_paper_trading,
     }
 
 

@@ -10,6 +10,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models import BrokerAccount, PaperHolding, Position, Strategy, TradingSignal
 from app.domain.enums import (
@@ -186,6 +187,17 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
         # worse than one with no data at all: it places real orders against
         # invented prices and looks like it is working.
         is_live = account.environment == Environment.LIVE.value
+
+        # A paper strategy on a live-only instance must not evaluate. Left
+        # RUNNING rather than errored, exactly as a lapsed broker session is:
+        # the strategy is not broken, and re-enabling paper should resume it
+        # without anyone restarting anything by hand.
+        if not is_live and not get_settings().enable_paper_trading:
+            logger.info(
+                "strategy_idle_paper_disabled",
+                strategy=str(strategy.id),
+            )
+            continue
 
         # A live strategy whose broker session has lapsed must not evaluate.
         # The runner used to check only that the account existed, so it went

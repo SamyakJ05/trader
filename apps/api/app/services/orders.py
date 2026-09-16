@@ -57,6 +57,23 @@ async def _existing_order(
     return result.scalar_one_or_none()
 
 
+def _paper_gate() -> str | None:
+    """Refusal reason for a simulated order, or None if permitted.
+
+    Mirrors _live_gate so both environments refuse through the same shape.
+    The paper engine itself is untouched and still imported -- the backtester
+    depends on its charge model, ledger arithmetic and fill accounting -- so
+    this governs paper ACCOUNTS placing orders, not the machinery.
+    """
+    if not get_settings().enable_paper_trading:
+        return (
+            "Paper trading is disabled on this instance (ENABLE_PAPER_TRADING "
+            "is false). Existing paper history stays readable; no new "
+            "simulated orders are accepted."
+        )
+    return None
+
+
 def _live_gate(account: BrokerAccount) -> str | None:
     """Returns a refusal reason, or None if live dispatch is permitted."""
     if not get_settings().enable_live_trading:
@@ -208,6 +225,12 @@ async def _place_order_unchecked(
         return order
 
     if environment == Environment.PAPER.value:
+        refusal = _paper_gate()
+        if refusal:
+            order.status = OrderStatus.REJECTED_RISK.value
+            order.status_message = refusal
+            await db.commit()
+            return order
         # get_trading_adapter, not get_adapter: this branch has already decided
         # the order is simulated, and get_adapter would hand back the real
         # broker's adapter regardless -- sending a live order that the paper

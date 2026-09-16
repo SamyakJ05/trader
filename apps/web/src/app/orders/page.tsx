@@ -24,6 +24,7 @@ const TERMINAL = ["FILLED", "CANCELLED", "REJECTED", "REJECTED_RISK", "FAILED"];
 export default function OrdersPage() {
   const { data: orders, loading, reload } = useApi<Order[]>("/orders?limit=100", 5000);
   const { data: accounts } = useApi<BrokerAccount[]>("/brokers/accounts");
+  const { data: config } = useApi<{ paper_trading_enabled: boolean }>("/system/config");
   const { push } = useToast();
   const [form, setForm] = useState({
     symbol: "RELIANCE",
@@ -42,7 +43,13 @@ export default function OrdersPage() {
   // Every account, not only paper. The form was paper-only by construction,
   // so a live account could be connected, verified and enabled and still have
   // no way to place an order through the UI.
-  const allAccounts = accounts ?? [];
+  // A paper account on a live-only instance accepts no orders, so listing it
+  // in the order form offers a rejection. Existing paper accounts stay
+  // visible everywhere else -- their history is intact and readable.
+  const paperEnabled = config?.paper_trading_enabled !== false;
+  const allAccounts = (accounts ?? []).filter(
+    (a) => paperEnabled || a.environment !== "paper",
+  );
   const accountId = form.account || allAccounts[0]?.id || "";
   const selected = allAccounts.find((a) => a.id === accountId);
   const isLive = selected?.environment === "live";

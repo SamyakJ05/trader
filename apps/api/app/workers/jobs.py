@@ -3,6 +3,7 @@ price step -> fill open paper orders -> mark positions -> run strategies."""
 
 from datetime import datetime, timezone
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.db.session import async_session_factory
@@ -33,6 +34,18 @@ async def paper_tick(ctx: dict) -> None:
     # succeeded" -- a persistent failure in one stage is a bug to fix, not a
     # reason for the process to be reported as dead.
     await heartbeat.beat(redis)
+
+    # The heartbeat above is stamped FIRST and unconditionally: /readyz reads
+    # it to decide whether the worker is alive, and a live-only instance whose
+    # worker looked dead would be a false alarm about the process that runs
+    # the tick stream and the fill reconciler.
+    #
+    # Everything below this line is the paper simulation -- price steps,
+    # settlement, simulated fills, position marks. None of it should run when
+    # the instance is live-only.
+    if not get_settings().enable_paper_trading:
+        return
+
     # Guarded like every other stage. It runs first, so an unguarded failure
     # here would take settlement, fills and marks down with it -- and
     # settlement does not depend on prices at all: T+1 holdings becoming

@@ -126,6 +126,14 @@ def _check_credential_ref(ref: str | None, user) -> None:
 async def create_account(body: CreateAccountRequest, user: VerifiedUser, db: DbSession):
     if body.environment == Environment.LIVE and body.broker == Broker.PAPER:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Paper broker cannot be live")
+    # Existing paper accounts stay readable; new ones are not created once the
+    # instance has moved to live-only.
+    if body.broker == Broker.PAPER and not get_settings().enable_paper_trading:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Paper trading is disabled on this instance. Connect a real broker "
+            "account instead; existing paper history remains readable.",
+        )
     _check_credential_ref(body.credential_ref, user)
     account = BrokerAccount(
         user_id=user.id,
