@@ -3,6 +3,7 @@ and the strategy generator. Secrets are encrypted at rest and never returned.
 Approval is the only path from a proposal to an order, and it goes through
 the standard order pipeline."""
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -192,6 +193,44 @@ async def test_settings(user: VerifiedUser, db: DbSession):
         }
 
 
+# A real Bedrock model id is vendor.name-vNUMBER:NUMBER, optionally prefixed
+# with a region for a cross-region inference profile. The console's card
+# TITLE ("GPT-6 Astra") is not an id, and typing it produces exactly the
+# AccessDenied this catches.
+_BEDROCK_ID = re.compile(
+    r"^(?:(?:us|eu|apac|ap)\.)?[a-z0-9-]+\.[\w.-]+-v\d+:\d+$"
+)
+
+
+def _malformed_bedrock_id(error: str) -> str | None:
+    """Whether the id AWS rejected is the wrong SHAPE, and what is missing.
+
+    Worth separating from "not granted": the two look identical in AWS's
+    message but need opposite actions -- request access, versus fix a typo.
+    """
+    match = re.search(r"([\w.:-]+) is not available for this account", error)
+    if not match:
+        return None
+    model = match.group(1)
+    if _BEDROCK_ID.match(model):
+        return None  # Well-formed; genuinely not granted.
+
+    missing = []
+    if not re.match(r"^(?:us|eu|apac|ap)\.", model):
+        missing.append(
+            "a region prefix (us. / eu. / apac.) if the console shows it as "
+            "'Cross-region inference'"
+        )
+    if not re.search(r"-v\d+:\d+$", model):
+        missing.append("the version suffix (for example -v1:0)")
+    if not missing:
+        return None
+    return (
+        f"The id you entered, {model!r}, is not shaped like a Bedrock model "
+        f"id — it is missing {' and '.join(missing)}."
+    )
+
+
 def _provider_hint(provider: str, error: str) -> str | None:
     """A next step for the failures that are not obvious from the message.
 
@@ -207,15 +246,14 @@ def _provider_hint(provider: str, error: str) -> str | None:
     # credential and an unavailable model with 403, so keying on the code told
     # an operator whose key was fine to go and check their key.
     if "not available for this account" in lowered or "explore other available" in lowered:
-        return (
-            "The credentials worked; AWS refused the MODEL. Either it is not "
-            "enabled for your account, or the id is wrong. In the Bedrock "
-            "console (same region) open Model catalog, find a Claude model "
-            "showing 'Access granted', and copy its exact Model ID into the "
-            "Model field here. Recent Claude models are addressed as "
-            "region-prefixed inference profiles (us.anthropic.… / "
-            "eu.anthropic.…) rather than the bare anthropic.… id."
+        base = (
+            "The credentials worked; AWS refused the MODEL. Open the Bedrock "
+            "console in the SAME region, find the model in Model catalog, "
+            "confirm it says 'Access granted', and copy its Model ID field "
+            "verbatim — not the title on the card."
         )
+        malformed = _malformed_bedrock_id(error)
+        return f"{base} {malformed}" if malformed else base
     if "security token" in lowered or "unrecognizedclient" in lowered:
         return (
             "AWS rejected the credentials. Bedrock needs an IAM access key "
