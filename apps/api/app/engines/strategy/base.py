@@ -13,11 +13,37 @@ from pydantic import BaseModel
 from app.domain.enums import OptionRight, OrderType, ProductType, SignalType
 
 
+class Bar(BaseModel):
+    """One completed candle. Oldest -> newest in StrategyContext.bars."""
+
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int | None = None
+
+
 class StrategyContext(BaseModel):
+    """What a strategy sees. Closes AND full bars.
+
+    `prices` came first and every existing strategy reads it, so it stays as
+    the closes. `bars` carries the highs, lows and volume the runner was
+    already loading from the candles table and discarding -- a range, a true
+    range or a volume confirmation cannot be recovered from closes alone, so
+    anything volatility- or breakout-based was impossible to write without
+    this.
+    """
+
     symbol: str
     prices: list[Decimal]  # oldest -> newest closes from the feed
     position_quantity: int
     params: dict
+    # Defaulted rather than required: a caller that predates this (tests,
+    # the backtester) keeps working and simply sees no bars. Strategies that
+    # need them check and return no signal rather than guessing -- inventing
+    # a high from a close would silently fabricate the volatility that
+    # position sizing is derived from.
+    bars: list[Bar] = []
 
 
 class Signal(BaseModel):

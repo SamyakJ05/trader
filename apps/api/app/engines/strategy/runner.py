@@ -26,7 +26,13 @@ from app.engines.market.candles import history as candle_history
 from app.engines.paper import market_sim
 from app.engines.strategy import execution
 from app.engines.strategy.ai_agent import AiAgentStrategy
-from app.engines.strategy.base import AsyncStrategyBase, Signal, StrategyBase, StrategyContext
+from app.engines.strategy.base import (
+    AsyncStrategyBase,
+    Bar,
+    Signal,
+    StrategyBase,
+    StrategyContext,
+)
 from app.engines.strategy.sma_crossover import SmaCrossover
 from app.services import audit, killswitch, quotes
 from app.services import orders as order_service
@@ -257,6 +263,19 @@ async def run_once(db: AsyncSession, redis: aioredis.Redis) -> int:
             ctx = StrategyContext(
                 symbol=symbol,
                 prices=history,
+                # The candles were already loaded with highs, lows and volume;
+                # only closes were being passed on. Volatility sizing and any
+                # breakout rule need the rest.
+                bars=[
+                    Bar(
+                        open=c.open,
+                        high=c.high,
+                        low=c.low,
+                        close=c.close,
+                        volume=c.volume,
+                    )
+                    for c in candles
+                ],
                 position_quantity=await _position_quantity(
                     db,
                     account.id,

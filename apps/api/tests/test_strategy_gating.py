@@ -127,7 +127,15 @@ async def test_a_connected_account_still_evaluates(monkeypatch):
     monkeypatch.setitem(runner.STRATEGY_REGISTRY, "sma_crossover", Recording())
 
     async def fake_history(*a, **kw):
-        return [SimpleNamespace(close=100, ts=__import__("datetime").datetime.now())]
+        return [
+            # OHLCV, because a real candles row has all of them NOT NULL.
+            # A close-only stub let the runner pass a context no live feed
+            # could ever produce.
+            SimpleNamespace(
+                open=100, high=100, low=100, close=100, volume=1,
+                ts=__import__("datetime").datetime.now(),
+            )
+        ]
 
     monkeypatch.setattr(runner, "candle_history", fake_history)
 
@@ -164,7 +172,15 @@ async def test_a_paper_strategy_is_not_gated_on_broker_session(monkeypatch):
     monkeypatch.setitem(runner.STRATEGY_REGISTRY, "sma_crossover", Recording())
 
     async def fake_history(*a, **kw):
-        return [SimpleNamespace(close=100, ts=__import__("datetime").datetime.now())]
+        return [
+            # OHLCV, because a real candles row has all of them NOT NULL.
+            # A close-only stub let the runner pass a context no live feed
+            # could ever produce.
+            SimpleNamespace(
+                open=100, high=100, low=100, close=100, volume=1,
+                ts=__import__("datetime").datetime.now(),
+            )
+        ]
 
     monkeypatch.setattr(runner, "candle_history", fake_history)
 
