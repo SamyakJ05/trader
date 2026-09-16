@@ -212,6 +212,19 @@ class DailyQuota:
 BREEZE_CALLS_PER_MINUTE = 100
 BREEZE_CALLS_PER_DAY = 5000
 
+# A separate, harder cap on the transactional calls. ICICI's API
+# documentation states: "A maximum combined limit of 10 orders per second is
+# allowed, which includes order placement, cancellation, modification, and
+# square-off requests."
+#
+# The general limiter does not cover this. Its steady rate is 1.67/s, well
+# under 10 -- but it carries a burst of 25, so an account that has been idle
+# can fire 25 calls at once, and if those are orders it breaches a cap that
+# comes from SEBI's algo framework rather than from ICICI's own convenience.
+# A burst of 10 is deliberate: it is exactly the documented allowance, so a
+# legitimate burst passes and the eleventh order in a second waits.
+BREEZE_ORDERS_PER_SECOND = 10
+
 
 def breeze_limiter(redis: aioredis.Redis, *, session_key: str) -> RateLimiter:
     """Per-second pacing for Breeze, derived from its per-minute limit.
@@ -227,6 +240,21 @@ def breeze_limiter(redis: aioredis.Redis, *, session_key: str) -> RateLimiter:
         # allowance in a second; a quarter keeps some in reserve for an order
         # that arrives while a sync is running.
         burst=max(1, BREEZE_CALLS_PER_MINUTE // 4),
+    )
+
+
+def breeze_order_limiter(redis: aioredis.Redis, *, session_key: str) -> RateLimiter:
+    """The order-rate cap, applied on top of the general per-minute limiter.
+
+    Keyed separately so a burst of reads cannot spend the order allowance and
+    a burst of orders cannot starve reads. Both are taken for an order call:
+    an order is also an API call and counts against the per-minute budget.
+    """
+    return RateLimiter(
+        redis,
+        name=f"breeze-orders:{session_key}",
+        rate_per_second=BREEZE_ORDERS_PER_SECOND,
+        burst=BREEZE_ORDERS_PER_SECOND,
     )
 
 

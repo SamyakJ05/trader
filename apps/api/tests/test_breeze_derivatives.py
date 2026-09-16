@@ -30,12 +30,22 @@ from app.domain.enums import (
 from app.domain.models import OrderRequest
 
 
-def adapter():
+def adapter(monkeypatch=None):
     account = SimpleNamespace(
         id=uuid.uuid4(), broker="icici_breeze", credential_ref="ICICI_MAIN",
         session_token_enc=None, broker_client_id="X", environment="live",
     )
-    return BreezeAdapter(account, BrokerEnvCredentials("ICICI_MAIN"))
+    a = BreezeAdapter(account, BrokerEnvCredentials("ICICI_MAIN"))
+    # The order-rate limiter paces against Redis before any transactional
+    # call. These tests are about payloads, and a real Redis is not part of
+    # that -- but the throttle is deliberately NOT made conditional in the
+    # adapter, so it is stubbed here. test_order_calls_are_rate_limited
+    # asserts it is actually applied.
+    async def no_throttle():
+        return None
+
+    a._throttle_order = no_throttle
+    return a
 
 
 def option(**kw):
@@ -287,3 +297,56 @@ def test_an_equity_row_carries_no_contract_identity():
     assert instrument.expiry is None
     assert instrument.strike is None
     assert instrument.option_right is None
+
+
+# ── the order-rate cap ───────────────────────────────────────────────
+
+
+async def test_order_calls_are_rate_limited_before_they_are_sent(monkeypatch):
+    """ICICI documents "a maximum combined limit of 10 orders per second ...
+    including order placement, cancellation, modification and square-off".
+
+    The general per-minute limiter does not cover this: its steady rate is
+    1.67/s, comfortably under 10, but it carries a burst of 25 -- so an
+    account that has been idle could fire 25 calls at once and breach a cap
+    that comes from SEBI's algo framework rather than ICICI's convenience.
+
+    Asserts the throttle is taken BEFORE the request goes out; one acquired
+    afterwards paces nothing.
+    """
+    import app.adapters.icici_breeze.adapter as breeze
+
+    events: list[str] = []
+
+    class RecordingThrottle:
+        async def acquire(self, *a, **kw):
+            events.append("throttle")
+
+    monkeypatch.setattr(breeze, "get_redis", lambda: None)
+    monkeypatch.setattr(
+        breeze, "breeze_order_limiter", lambda *a, **kw: RecordingThrottle()
+    )
+
+    a = BreezeAdapter(
+        SimpleNamespace(
+            id=uuid.uuid4(), broker="icici_breeze", credential_ref="ICICI_MAIN",
+            session_token_enc=None, broker_client_id="X", environment="live",
+        ),
+        BrokerEnvCredentials("ICICI_MAIN"),
+    )
+
+    async def fake_request(method, path, body=None):
+        events.append("request")
+        return {"order_id": "B-1"}
+
+    a._request = fake_request
+    await a.place_order(option(), "cli-1")
+    assert events == ["throttle", "request"]
+
+
+def test_the_order_burst_is_exactly_the_documented_allowance():
+    """A burst above 10 would breach the cap on the first spike; below it
+    would refuse orders ICICI permits."""
+    from app.adapters.throttle import BREEZE_ORDERS_PER_SECOND
+
+    assert BREEZE_ORDERS_PER_SECOND == 10

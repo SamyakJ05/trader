@@ -38,7 +38,12 @@ from app.adapters.base import (
     as_int,
 )
 from app.adapters.icici_breeze.stream import BreezeTickStream
-from app.adapters.throttle import DailyQuotaExceeded, breeze_limiter, breeze_quota
+from app.adapters.throttle import (
+    DailyQuotaExceeded,
+    breeze_limiter,
+    breeze_order_limiter,
+    breeze_quota,
+)
 from app.core.logging import get_logger
 from app.core.redis import get_redis
 from app.core.security import decrypt_secret, encrypt_secret
@@ -567,6 +572,20 @@ class BreezeAdapter(BrokerAdapter):
 
     # ── trading: blocked until verified against real account ────────
 
+    async def _throttle_order(self) -> None:
+        """Wait for the transactional-call allowance.
+
+        ICICI documents "a maximum combined limit of 10 orders per second ...
+        including order placement, cancellation, modification, and square-off".
+        The general limiter does not cover this: its steady rate is under 10,
+        but its burst of 25 would let an idle account fire 25 at once. This
+        comes from SEBI's algo framework rather than ICICI's convenience, so
+        it is enforced rather than assumed.
+        """
+        await breeze_order_limiter(
+            get_redis(), session_key=self._session_key()
+        ).acquire()
+
     def _derivatives_fields(self, request: OrderRequest) -> dict:
         """expiry_date, right and strike_price for an F&O order.
 
@@ -679,6 +698,7 @@ class BreezeAdapter(BrokerAdapter):
         # TODO(breeze-live-verification): payload follows Breeze's SDK but has
         # never been sent to their API. The live gate keeps this unreachable
         # until an operator verifies it against their own account.
+        await self._throttle_order()
         body = self._order_body(request, client_order_id)
         try:
             data = await self._request("POST", "/order", body)
@@ -697,6 +717,7 @@ class BreezeAdapter(BrokerAdapter):
         )
 
     async def modify_order(self, broker_order_id: str, request: OrderRequest) -> PlaceOrderResult:
+        await self._throttle_order()
         order_type = _ORDER_TYPE_MAP.get(request.order_type)
         if order_type is None:
             raise FeatureNotSupportedError(
@@ -742,6 +763,7 @@ class BreezeAdapter(BrokerAdapter):
         and correct for the cash segment that is all this adapter could place
         until now.
         """
+        await self._throttle_order()
         try:
             data = await self._request(
                 "DELETE",

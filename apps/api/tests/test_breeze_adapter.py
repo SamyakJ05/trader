@@ -30,7 +30,17 @@ def account(session="plain:sess-key", user_id="ICICI123"):
 def adapter(monkeypatch, **kw):
     monkeypatch.setenv("BREEZE_MAIN_API_KEY", "app-key")
     monkeypatch.setenv("BREEZE_MAIN_API_SECRET", "secret")
-    return BreezeAdapter(account(**kw), BrokerEnvCredentials("BREEZE_MAIN"))
+    a = BreezeAdapter(account(**kw), BrokerEnvCredentials("BREEZE_MAIN"))
+
+    # Transactional calls pace against Redis first (ICICI's documented cap of
+    # 10 orders/second). No test here is about that pacing, and a real Redis
+    # is not available; the throttle stays unconditional in the adapter and
+    # test_breeze_derivatives asserts it is applied.
+    async def no_throttle():
+        return None
+
+    a._throttle_order = no_throttle
+    return a
 
 
 def order(product=ProductType.CNC, order_type=OrderType.LIMIT, price=Decimal("2845.50"), **kw):
