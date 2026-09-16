@@ -8,8 +8,11 @@ CI passed anyway, because its database has no users: the INSERT matched zero
 rows and succeeded trivially. The failure only appeared on a deploy to a real
 database, mid-upgrade, leaving the API container down.
 
-So the test that matters is not "does the migration run" but "does it run when
-there is a user for it to insert against".
+So this runs the migration's OWN statement, read from the migration module,
+against a database with a user in it. An earlier version of this test
+hand-copied the SQL with bind parameters and spent two CI rounds failing on
+its own binds while proving nothing about the migration -- a test that
+rewrites what it tests is not testing it.
 """
 
 import os
@@ -23,25 +26,31 @@ pytestmark = pytest.mark.skipif(
     not os.getenv("TEST_DATABASE_URL"), reason="requires disposable Postgres"
 )
 
-# The statement from alembic/versions/0012_default_risk_rules.py, verbatim in
-# shape. Duplicated rather than imported because a migration is a historical
-# artefact: it must keep working as written, even after the service it mirrors
-# changes.
-#
-# CAST(:params AS jsonb) rather than :params::jsonb -- SQLAlchemy cannot tell
-# a bind parameter from Postgres's :: cast operator, and leaves the parameter
-# unbound. The migration itself inlines its literals and has no binds, so this
-# difference is the test's alone.
-_INSERT = """
-INSERT INTO risk_rules
-    (id, user_id, environment, rule_type, params, enabled, created_at)
-SELECT gen_random_uuid(), u.id, :env, :rule, CAST(:params AS jsonb), true, now()
-FROM users u
-WHERE NOT EXISTS (
-    SELECT 1 FROM risk_rules r
-    WHERE r.user_id = u.id AND r.environment = :env AND r.rule_type = :rule
-)
-"""
+
+def _migration_statements() -> list[str]:
+    """The exact SQL 0012 runs, captured by calling its upgrade() with a
+    recording op.
+
+    Reading the statements rather than reimplementing them is the point: the
+    bug was IN the statement, so a test that writes its own version cannot
+    catch it.
+    """
+    import importlib.util
+    from pathlib import Path
+    from unittest.mock import patch
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic" / "versions" / "0012_default_risk_rules.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_0012", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    captured: list[str] = []
+    with patch.object(module.op, "execute", side_effect=captured.append):
+        module.upgrade()
+    return captured
 
 
 @pytest.fixture
@@ -51,74 +60,72 @@ async def sessions():
     await engine.dispose()
 
 
-async def test_the_backfill_inserts_for_a_real_user(sessions):
-    """The case CI never exercised: a user exists, so the INSERT has a row to
-    write and every NOT NULL column has to be satisfied."""
+@pytest.fixture
+async def user_id(sessions):
+    """A real user, so the migration's INSERT has a row to write -- which is
+    exactly the condition CI lacked when this bug shipped."""
     async with sessions() as db:
-        email = f"{uuid.uuid4()}@migration-test.local"
-        user_id = (
+        created = (
             await db.execute(
                 text(
                     "INSERT INTO users (id, email, password_hash, is_active, "
                     "is_admin, created_at) VALUES (gen_random_uuid(), :e, 'x', "
                     "true, false, now()) RETURNING id"
                 ),
-                {"e": email},
+                {"e": f"{uuid.uuid4()}@migration-test.local"},
             )
         ).scalar_one()
+        await db.commit()
+    yield created
+    async with sessions() as db:
+        await db.execute(text("DELETE FROM users WHERE id = :u"), {"u": created})
+        await db.commit()
 
-        await db.execute(
-            text(_INSERT),
-            {"env": "live", "rule": "MAX_TOTAL_EXPOSURE",
-             "params": '{"max_exposure": 100000}'},
-        )
 
-        row = (
+async def test_the_backfill_inserts_for_a_real_user(sessions, user_id):
+    """Every NOT NULL column has to be satisfied, created_at included."""
+    async with sessions() as db:
+        for statement in _migration_statements():
+            await db.execute(text(statement))
+        await db.commit()
+
+    async with sessions() as db:
+        rows = (
             await db.execute(
                 text(
-                    "SELECT params, created_at FROM risk_rules "
-                    "WHERE user_id = :u AND rule_type = 'MAX_TOTAL_EXPOSURE'"
+                    "SELECT rule_type, environment, created_at FROM risk_rules "
+                    "WHERE user_id = :u"
                 ),
                 {"u": user_id},
             )
-        ).first()
-        assert row is not None, "no rule was inserted for an existing user"
-        assert row.created_at is not None, "created_at was not populated"
-        assert row.params == {"max_exposure": 100000}
+        ).all()
 
-        await db.rollback()
+    assert rows, "the migration inserted nothing for an existing user"
+    assert all(r.created_at is not None for r in rows), "created_at was not populated"
+    # Both environments, because an account can be switched between them and a
+    # limit that exists in only one silently disappears on the switch.
+    assert {r.environment for r in rows} == {"paper", "live"}
+    assert "MAX_TOTAL_EXPOSURE" in {r.rule_type for r in rows}
 
 
-async def test_the_backfill_is_idempotent(sessions):
-    """Deploys get re-run, and a second insert of the same rule would leave a
-    user with two conflicting limits of the same type."""
+async def test_the_backfill_is_idempotent(sessions, user_id):
+    """Deploys get re-run, and a second insert would leave a user with two
+    conflicting limits of the same type."""
+    statements = _migration_statements()
+    for _ in range(2):
+        async with sessions() as db:
+            for statement in statements:
+                await db.execute(text(statement))
+            await db.commit()
+
     async with sessions() as db:
-        email = f"{uuid.uuid4()}@migration-test.local"
-        user_id = (
-            await db.execute(
-                text(
-                    "INSERT INTO users (id, email, password_hash, is_active, "
-                    "is_admin, created_at) VALUES (gen_random_uuid(), :e, 'x', "
-                    "true, false, now()) RETURNING id"
-                ),
-                {"e": email},
-            )
-        ).scalar_one()
-
-        params = {"env": "live", "rule": "MAX_DAILY_TURNOVER",
-                  "params": '{"max_turnover": 200000}'}
-        await db.execute(text(_INSERT), params)
-        await db.execute(text(_INSERT), params)
-
         count = (
             await db.execute(
                 text(
                     "SELECT count(*) FROM risk_rules WHERE user_id = :u "
-                    "AND rule_type = 'MAX_DAILY_TURNOVER'"
+                    "AND rule_type = 'MAX_TOTAL_EXPOSURE' AND environment = 'live'"
                 ),
                 {"u": user_id},
             )
         ).scalar_one()
-        assert count == 1
-
-        await db.rollback()
+    assert count == 1
