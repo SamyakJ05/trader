@@ -97,6 +97,15 @@ class RiskDecision(StrEnum):
 class RiskRuleType(StrEnum):
     MAX_DAILY_LOSS = "MAX_DAILY_LOSS"
     MAX_ORDER_NOTIONAL = "MAX_ORDER_NOTIONAL"
+    # The capital ceilings. Neither is implied by the per-order or per-symbol
+    # limits: ten orders of 50k each pass MAX_ORDER_NOTIONAL and
+    # MAX_POSITION_SIZE while committing 5 lakh.
+    #
+    # EXPOSURE caps what is held at once, so selling frees room.
+    # TURNOVER caps what is bought in a day regardless of sells, which is what
+    # stops a strategy churning the same capital repeatedly.
+    MAX_TOTAL_EXPOSURE = "MAX_TOTAL_EXPOSURE"
+    MAX_DAILY_TURNOVER = "MAX_DAILY_TURNOVER"
     MAX_POSITION_SIZE = "MAX_POSITION_SIZE"
     MAX_OPEN_POSITIONS = "MAX_OPEN_POSITIONS"
     DUPLICATE_ORDER_COOLDOWN = "DUPLICATE_ORDER_COOLDOWN"

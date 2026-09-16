@@ -171,6 +171,9 @@ export interface RiskRule {
   environment: string;
   params: Record<string, unknown>;
   enabled: boolean;
+  // What the limit means, in words. A rule name and a params blob is not a
+  // sentence anyone reads under pressure.
+  description: string;
 }
 
 export interface AuditEvent {

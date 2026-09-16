@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.core.deps import DbSession, VerifiedUser
 from app.db.models import RiskEvent, RiskRule
 from app.domain.enums import AuditEventType, Environment, RiskRuleType
-from app.services import audit
+from app.services import audit, risk_defaults
 
 router = APIRouter(prefix="/risk", tags=["risk"])
 
@@ -25,6 +25,7 @@ class RuleOut(BaseModel):
     environment: str
     params: dict
     enabled: bool
+    description: str = ""
 
 
 def _out(r: RiskRule) -> RuleOut:
@@ -34,6 +35,10 @@ def _out(r: RiskRule) -> RuleOut:
         environment=r.environment,
         params=r.params,
         enabled=r.enabled,
+        # A rule name and a params blob do not tell the operator what the
+        # limit actually does. "MAX_TOTAL_EXPOSURE {"max_exposure": 100000}"
+        # is not a sentence anyone reads under pressure.
+        description=risk_defaults.describe(RiskRuleType(r.rule_type), r.params or {}),
     )
 
 

@@ -103,7 +103,17 @@ export default function RiskPage() {
                       <Td>
                         <Pill value={r.environment} />
                       </Td>
-                      <Td className="num text-xs text-ink-dim">{JSON.stringify(r.params)}</Td>
+                      {/* The description in words, with the raw params
+                          underneath: "MAX_TOTAL_EXPOSURE {"max_exposure":
+                          100000}" is not a sentence anyone reads under
+                          pressure, but the exact values still matter when
+                          editing. */}
+                      <Td className="text-xs">
+                        <span className="text-ink-dim">{r.description || "—"}</span>
+                        <span className="num ml-2 text-ink-faint">
+                          {JSON.stringify(r.params)}
+                        </span>
+                      </Td>
                       <Td>
                         <span className={r.enabled ? "text-gain" : "text-ink-faint"}>
                           {r.enabled ? "yes" : "no"}

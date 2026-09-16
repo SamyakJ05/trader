@@ -4,6 +4,7 @@ ALLOW, BLOCK (this order), HALT (kill switch / daily loss breach).
 Every evaluation is persisted as a risk_event and audited."""
 
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import redis.asyncio as aioredis
@@ -11,7 +12,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.models import BrokerAccount, PaperHolding, Position, RiskEvent, RiskRule
+from app.db.models import (
+    BrokerAccount,
+    Fill,
+    Order,
+    PaperHolding,
+    Position,
+    RiskEvent,
+    RiskRule,
+)
 from app.domain import calendar
 from app.domain.enums import (
     AuditEventType,
@@ -150,6 +159,113 @@ class RiskEngine:
                 return (
                     f"Resulting position {current + delta} in {request.symbol} "
                     f"exceeds max size {limit_qty}"
+                )
+
+        elif rule_type == RiskRuleType.MAX_TOTAL_EXPOSURE:
+            # What is held at once, across every symbol and account in this
+            # environment. Neither MAX_ORDER_NOTIONAL nor MAX_POSITION_SIZE
+            # bounds this: ten orders of 50k in ten different symbols pass
+            # both while committing 5 lakh.
+            #
+            # Only a BUY consumes room. A sell reduces exposure, and refusing
+            # one because the book is full would trap a strategy in exactly
+            # the position the limit exists to bound.
+            if request.side != OrderSide.BUY:
+                return None
+            limit = Decimal(str(params.get("max_exposure", 200000)))
+            reference = request.price or last_price
+            if reference is None:
+                return "No reference price available to value total exposure"
+
+            # Valued at average cost rather than at the last price: a mark
+            # that moves would let a limit pass or fail on market noise rather
+            # than on anything the operator did, and the cost basis is what
+            # was actually committed.
+            held = (
+                await self.db.execute(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                func.abs(Position.quantity) * Position.average_price
+                            ),
+                            0,
+                        )
+                    ).where(
+                        Position.user_id == user_id,
+                        Position.environment == environment,
+                        Position.quantity != 0,
+                    )
+                )
+            ).scalar_one()
+            if environment == "paper":
+                held += (
+                    await self.db.execute(
+                        select(
+                            func.coalesce(
+                                func.sum(
+                                    PaperHolding.quantity * PaperHolding.average_price
+                                ),
+                                0,
+                            )
+                        )
+                        .join(BrokerAccount)
+                        .where(
+                            BrokerAccount.user_id == user_id,
+                            PaperHolding.quantity != 0,
+                        )
+                    )
+                ).scalar_one()
+
+            incoming = reference * request.quantity
+            if Decimal(str(held)) + incoming > limit:
+                return (
+                    f"Total exposure would reach {Decimal(str(held)) + incoming:.2f}, "
+                    f"over the {limit:.2f} ceiling (currently {Decimal(str(held)):.2f} "
+                    "held). Close a position or raise the limit."
+                )
+
+        elif rule_type == RiskRuleType.MAX_DAILY_TURNOVER:
+            # Every buy today, whether or not it was sold again. This is what
+            # bounds a strategy churning the same capital repeatedly -- which
+            # exposure alone does not, since each round trip frees its own
+            # room and the charges accumulate regardless.
+            if request.side != OrderSide.BUY:
+                return None
+            limit = Decimal(str(params.get("max_turnover", 500000)))
+            reference = request.price or last_price
+            if reference is None:
+                return "No reference price available to value daily turnover"
+
+            # The IST trading day, not a UTC one: a UTC midnight boundary
+            # would reset the counter at 05:30 IST, in the middle of the
+            # pre-open, and split one trading session across two budgets.
+            start = datetime.now(calendar.IST).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).astimezone(timezone.utc)
+            # Fills, not orders: an order that was rejected or never filled
+            # committed no capital, and counting it would let a run of
+            # rejections exhaust the day's budget.
+            bought = (
+                await self.db.execute(
+                    select(
+                        func.coalesce(func.sum(Fill.quantity * Fill.price), 0)
+                    )
+                    .join(Order, Fill.order_id == Order.id)
+                    .where(
+                        Order.user_id == user_id,
+                        Order.environment == environment,
+                        Order.side == OrderSide.BUY.value,
+                        Fill.ts >= start,
+                    )
+                )
+            ).scalar_one()
+
+            incoming = reference * request.quantity
+            if Decimal(str(bought)) + incoming > limit:
+                return (
+                    f"Daily turnover would reach {Decimal(str(bought)) + incoming:.2f}, "
+                    f"over the {limit:.2f} ceiling ({Decimal(str(bought)):.2f} bought "
+                    "today). The budget resets at midnight IST."
                 )
 
         elif rule_type == RiskRuleType.MAX_OPEN_POSITIONS:

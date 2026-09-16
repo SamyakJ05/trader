@@ -12,7 +12,7 @@ from app.core.redis import get_redis
 from app.core.security import hash_password, verify_password
 from app.db.models import User
 from app.domain.enums import AuditEventType
-from app.services import audit, challenge, email, ratelimit
+from app.services import audit, challenge, email, ratelimit, risk_defaults
 from app.services import invites as invite_service
 from app.services import password_reset as reset_service
 from app.services import sessions as session_service
@@ -157,13 +157,22 @@ async def register(body: RegisterRequest, request: Request, db: DbSession):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Email already registered"
         ) from exc
+    # The risk engine loops over ENABLED rules, so a user with none passes
+    # every check. Only the demo seeder created any, and a production deploy
+    # never runs it -- which left a real account with no limit of any kind.
+    rules = await risk_defaults.provision(db, user.id)
     await audit.emit(
         db,
         AuditEventType.USER_ACTION,
         user_id=user.id,
         entity_type="user",
         entity_id=user.id,
-        payload={"action": "register", "via": "invite", "invite_id": str(invite.id)},
+        payload={
+            "action": "register",
+            "via": "invite",
+            "invite_id": str(invite.id),
+            "risk_rules_provisioned": rules,
+        },
     )
     return await _create_session(db, user, request)
 
