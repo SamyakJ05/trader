@@ -172,18 +172,37 @@ place permitted to know Breeze's payload shapes.
 This is what teaches the platform Breeze's stock codes. Nothing that names an
 instrument works before it has run.
 
+**This is now automatic**: the arq worker syncs NSE and NFO nightly at 08:30
+IST and once at startup. There is also a "Sync instruments" button on each
+broker connection, which is the quickest way to do it on demand. Neither
+existed when this playbook was first written — `sync_instruments` had no
+caller at all, so on a fresh deployment the table stayed empty forever and
+every symbol was rejected as unknown.
+
+To check it by hand:
+
 ```python
 from app.services.instruments import sync_instruments, token_map
 
 async with async_session_factory() as db:
     account = ...  # as above
-    print(await sync_instruments(db, account, exchange="NSE"))
+    print(await sync_instruments(db, account, exchange="NSE"))   # ~5,900 rows
+    print(await sync_instruments(db, account, exchange="NFO"))   # ~80,000 rows
     print(await token_map(db, broker="icici_breeze", symbols=["RELIND"]))
 ```
 
-Expect tens of thousands of rows. Confirm a code you recognise: `RELIND` should
-resolve, with "RELIANCE INDUSTRIES (RELIANCE)" as its name so the code is
-legible to a human reading a position list.
+Confirm a code you recognise: `RELIND` should resolve, with "RELIANCE
+INDUSTRIES (RELIANCE)" as its name so the code is legible to a human reading a
+position list.
+
+**NFO is where the row count matters.** Breeze lists roughly 80,000 contracts
+under only ~216 stock codes — NIFTY alone has about 3,350. If the NFO sync
+reports a few hundred rows rather than tens of thousands, the contract
+uniqueness has regressed and an options chain is being collapsed to one row
+per underlying.
+
+**BSE is deliberately not synced for Breeze.** ICICI's own documentation says
+"securities listed on BSE and MCX are not available on Breeze API".
 
 **Note the URL.** Two security master zips are live and they are not mirrors —
 the one in ICICI's SDK has no NSE equity file at all. This adapter uses the
@@ -196,6 +215,20 @@ NSE, check that first.
 
 Set the account's environment to `live` (this does **not** enable live orders —
 that is a separate flag) and create a strategy naming Breeze codes.
+
+**This is now automatic too**: the tick stream starts with the arq worker and
+supervises itself, reconnecting on drops and re-subscribing when a strategy
+adds a symbol. It previously had no caller anywhere, so no live tick was ever
+ingested — and since every live order is risk-checked against a fresh quote,
+that alone made live trading impossible.
+
+So in normal operation, watch the worker's logs rather than running anything:
+
+```
+docker compose logs -f worker | grep breeze_stream
+```
+
+To drive it by hand instead:
 
 ```python
 from app.workers.tick_stream import run_forever
@@ -278,6 +311,66 @@ Confirm it disappears from ICICI and our row moves to `CANCELLED`.
 
 ---
 
+## Stage 5.5 — A futures or options order
+
+Only once stage 5 has passed for cash equity. An F&O order adds three
+mandatory fields and a different product, and each is a way for the order to
+be rejected or — worse — accepted as something other than what you meant.
+
+Every value below is from ICICI's published REST reference, which disagrees
+with their own SDK's README on the expiry format. The README's streaming
+examples use `13-Feb-2025`; the order endpoint specifies ISO 8601 and sends
+`2024-09-12T06:00:00.000Z`. The platform follows the documented endpoint.
+
+```python
+from datetime import date
+from decimal import Decimal
+from app.domain.models import OrderRequest
+from app.domain.enums import *
+
+request = OrderRequest(
+    symbol="NIFTY", exchange=Exchange.NFO, side=OrderSide.BUY,
+    order_type=OrderType.LIMIT, product=ProductType.NRML,
+    quantity=65,                       # ONE lot at the time of writing
+    price=Decimal("1"),                # far from the money, so it rests
+    expiry=date(2026, 9, 29), strike=Decimal("25000"), right=OptionRight.CALL,
+)
+print(adapter._order_body(request, "cli-fo-1"))
+```
+
+**Check the payload before sending it.** `product` must be `options` for an
+option and `futures` for a future — they are different products at Breeze, and
+our single NRML maps to both. `right` must be `call`/`put`/`others`, never
+empty. `strike_price` must be `"0"` for a future, not `""`.
+
+**Quantity is in units, not lots.** Read `lot_size` from the instrument master
+rather than trusting any number, including the one above — ICICI's own
+documentation examples use `quantity: "75"` for NIFTY, while the current
+security master says the lot is **65**. Their examples are older than their
+data, and a wrong lot size is either a rejection or an unintended position
+size:
+
+```python
+from sqlalchemy import select
+from app.db.models import MarketInstrument
+
+async with async_session_factory() as db:
+    row = (await db.execute(
+        select(MarketInstrument.lot_size, MarketInstrument.expiry)
+        .where(MarketInstrument.broker == "icici_breeze",
+               MarketInstrument.symbol == "NIFTY",
+               MarketInstrument.exchange == "NFO")
+        .limit(1)
+    )).first()
+    print(row)
+```
+
+Then place it, and **cancel it** — confirming the cancel carries `NFO` and not
+`NSE`. An option left open through expiry settles against you, and the cancel
+path hardcoded NSE until recently, which made an NFO order uncancellable.
+
+---
+
 ## Stage 6 — Before anyone else uses this
 
 Start with a hard quantity cap in a risk rule, not with a strategy you trust.
@@ -287,21 +380,30 @@ regulated in India. Once anyone other than you runs a strategy here, you are
 likely in territory requiring broker-approved algo registration. Raise it with
 ICICI before you invite anyone.
 
-**Brokerage rates.** ICICI's plan differs from Zerodha's and from the
-placeholder this platform currently uses for Breeze. Until you correct it, every
-paper P&L and backtest on a Breeze account is wrong in the same direction.
+**Brokerage rates.** ICICI's plan is encoded as Prime 999 (0.22% delivery,
+0.022% intraday) — real rates, not a placeholder. But it is per-instance
+configuration rather than a fact about the broker: an account on MoneySaver
+pays nearly a third more on delivery, and every paper P&L and backtest would
+then be wrong in the same direction. Confirm your plan.
 
 ---
 
 ## What is still not verified even after all this
 
-- **Partial fills.** A one-share order cannot partially fill.
-- **Order modification.** Verify separately with another resting limit order.
-- **Anything but CNC cash equity.** `mtf`, `btst`, futures and options are
-  untested, and MIS is refused outright.
-- **The order-notification stream.** Only the tick stream is consumed; order
-  state comes from polling.
+- **Partial fills.** A one-share order cannot partially fill. The filled
+  quantity is *derived* for Breeze — its order book has no `filled_quantity`
+  field, so it is computed as `quantity - pending - cancelled`. That
+  arithmetic is only as good as the three fields, and a partial fill is the
+  only thing that exercises it.
+- **Anything but CNC cash equity.** Futures and options can now be *built* and
+  the payload matches ICICI's documented example field for field, but no F&O
+  order has been sent. `mtf` and `btst` are unmapped, and MIS is refused
+  outright.
 - **Reconnection under a real outage.** Tested against simulated failures only.
+- **The order-notification stream.** Only the tick stream is consumed. Order
+  state comes from the reconciler polling `get_orders()` every 30 seconds —
+  which now exists, where previously nothing called it and a filled order
+  updated nothing at all.
 
 Say so when describing this platform's status. "Verified" should mean the path
 you walked, not the whole adapter.
