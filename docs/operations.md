@@ -142,6 +142,10 @@ docker compose restart worker    # safe any time: the tick is idempotent
 
 ### Importing history for a backtest
 
+**Do this from the UI**: Backtests → Import history. It queues a worker job
+and reports, per symbol, how many candles landed and what failed. The CLI
+below is the fallback for when the UI or the worker is not available.
+
 A backtest replays stored candles; it cannot invent bars it does not have.
 Nothing imports history automatically, and the strategies most worth testing
 are usually the ones whose symbols were never imported.
@@ -152,7 +156,7 @@ docker compose exec api python -m app.cli.import_history \
 ```
 
 One symbol per run, and always the **NSE ticker** — the importer appends
-`.NS` for Yahoo. A Breeze strategy names ICICI's own codes (RELIND), and the
+`.NS` for Yahoo. The UI takes up to ten symbols at once. A Breeze strategy names ICICI's own codes (RELIND), and the
 backtest resolves those to the NSE ticker through the instrument master's
 ISIN, so sync instruments before importing or the mapping has nothing to
 work from.
