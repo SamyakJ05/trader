@@ -27,10 +27,15 @@ pytestmark = pytest.mark.skipif(
 # shape. Duplicated rather than imported because a migration is a historical
 # artefact: it must keep working as written, even after the service it mirrors
 # changes.
+#
+# CAST(:params AS jsonb) rather than :params::jsonb -- SQLAlchemy cannot tell
+# a bind parameter from Postgres's :: cast operator, and leaves the parameter
+# unbound. The migration itself inlines its literals and has no binds, so this
+# difference is the test's alone.
 _INSERT = """
 INSERT INTO risk_rules
     (id, user_id, environment, rule_type, params, enabled, created_at)
-SELECT gen_random_uuid(), u.id, :env, :rule, :params::jsonb, true, now()
+SELECT gen_random_uuid(), u.id, :env, :rule, CAST(:params AS jsonb), true, now()
 FROM users u
 WHERE NOT EXISTS (
     SELECT 1 FROM risk_rules r
