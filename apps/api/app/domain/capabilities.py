@@ -48,8 +48,10 @@ class BrokerCapabilities(BaseModel):
 #   icici_breeze — 2026-09-17, CASH EQUITY ONLY. RELIND (ISIN INE002A01018),
 #   1 share, LIMIT 1170 against a market of ~1244, CNC, from the registered
 #   static IP during market hours. Accepted as broker order
-#   20260917K400002141, visible in the ICICI console, status OPEN, with the
-#   full audit chain recorded and no duplicate. F&O and every product other
+#   20260917K400002141, visible in the ICICI console, with the full audit
+#   chain recorded and no duplicate, then cancelled through the adapter and
+#   confirmed gone at ICICI -- so placement AND cancellation are both
+#   exercised against the real API. F&O and every product other
 #   than CNC are still unexercised, as is the tick stream, which has never
 #   subscribed to anything. See docs/breeze-verification-playbook.md stage 5.
 VERIFIED_LIVE_ADAPTERS: frozenset[Broker] = frozenset({Broker.ICICI_BREEZE})
@@ -173,8 +175,10 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         "funds, holdings and positions were exercised and corrected against "
         "what ICICI actually returns. On 2026-09-17 a cash equity order was "
         "accepted from the registered static IP during market hours — RELIND, "
-        "1 share, LIMIT 1170, CNC, broker order 20260917K400002141 — which is "
-        "what moved adapter_status from scaffold to working. That covers "
+        "1 share, LIMIT 1170, CNC, broker order 20260917K400002141 — then "
+        "cancelled, so both placement and cancellation have been exercised. "
+        "That is what moved adapter_status from scaffold to working, and it "
+        "covers "
         "CASH EQUITY ONLY: F&O, and any product other than CNC, remain "
         "unexercised. Two of Breeze's own rules were found by that order and "
         "are handled in the adapter: user_remark takes alphanumerics only, "
