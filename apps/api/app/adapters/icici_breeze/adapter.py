@@ -183,6 +183,59 @@ _ORDER_TYPE_MAP = {
 
 _VALIDITY_MAP = {"DAY": "day", "IOC": "ioc"}
 
+# Breeze refuses a user_remark containing anything but letters and digits, and
+# says so only once the order has been sent: "Only alphanumeric characters are
+# allowed in user_remark". Every client_order_id this platform generates
+# carries a hyphen (ord-..., ai-..., strategy ids), so an unsanitised remark
+# refused every order.
+_USER_REMARK_MAX = 20
+
+
+# Phrases that mean Breeze has told us exactly what is wrong with the request.
+# A rejection carrying one of these needs no speculation about the network
+# path; anything else might genuinely be the IP whitelist, which fails as an
+# ordinary error with nothing distinguishing about it.
+_SELF_EXPLAINING = (
+    "alphanumeric",
+    "user_remark",
+    "stock_code",
+    "exchange_code",
+    "product",
+    "quantity",
+    "price",
+    "expiry",
+    "strike",
+    "right",
+    "validity",
+    "insufficient",
+    "margin",
+    "market is closed",
+    "not allowed to trade",
+)
+
+
+def _names_its_own_cause(message: str) -> bool:
+    """True when the broker's own message identifies the problem."""
+    lowered = message.lower()
+    return any(phrase in lowered for phrase in _SELF_EXPLAINING)
+
+
+def _user_remark(client_order_id: str) -> str:
+    """Breeze's own field limits applied to our order id.
+
+    Truncated AFTER stripping, not before, so removing characters cannot
+    shorten the useful part of the id: ord-3f9c... keeps 3f9c..., not ord.
+
+    The result is a label only. It is never read back to identify an order --
+    our client_order_id is unique per account and stored in full -- so two
+    different ids collapsing to the same remark is harmless here, where it
+    would be a serious bug if Breeze treated this as an idempotency key.
+    """
+    cleaned = "".join(c for c in client_order_id if c.isalnum())
+    # Every id is prefixed and hyphenated; if stripping leaves nothing at all,
+    # send a constant rather than an empty field of unknown acceptability.
+    return cleaned[:_USER_REMARK_MAX] or "trader"
+
 # Exchanges whose orders are derivatives contracts, and therefore need
 # expiry/right/strike. BFO is absent because Breeze's own documentation says
 # "securities listed on BSE and MCX are not available on Breeze API".
@@ -721,7 +774,15 @@ class BreezeAdapter(BrokerAdapter):
             # treats user_remark as one, so the platform's own idempotency
             # (client_order_id, unique per account) remains the only guard
             # against a duplicate order.
-            "user_remark": client_order_id[:20],
+            #
+            # Stripped to alphanumerics because Breeze rejects anything else
+            # outright -- "Only alphanumeric characters are allowed in
+            # user_remark", from a real order whose id was ord-3f9c... The
+            # hyphen every generator here produces was enough to refuse the
+            # order. Losing characters costs nothing precisely because this is
+            # a label: no lookup keys on it, and the id it came from is stored
+            # in full on our own row.
+            "user_remark": _user_remark(client_order_id),
             **self._derivatives_fields(request),
         }
         if request.trigger_price is not None:
@@ -757,7 +818,16 @@ class BreezeAdapter(BrokerAdapter):
             # A blocked-by-IP rejection arrives as an ordinary broker error.
             # Saying so here saves hours spent re-checking the session and the
             # payload, which is where suspicion naturally falls first.
-            raise BrokerError(f"{exc} — {self._STATIC_IP_HINT}") from exc
+            #
+            # But only when Breeze has NOT already named the cause. Appended to
+            # every failure it actively misleads: a real order came back "Only
+            # alphanumeric characters are allowed in user_remark" with the IP
+            # hint bolted on, which points away from the field the broker just
+            # named. A message that explains itself gets no theory added.
+            raise BrokerError(
+                str(exc) if _names_its_own_cause(str(exc))
+                else f"{exc} — {self._STATIC_IP_HINT}"
+            ) from exc
         broker_order_id = data.get("order_id")
         if not broker_order_id:
             raise BrokerError("Breeze accepted the order without returning an id", raw=data)

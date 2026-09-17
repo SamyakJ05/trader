@@ -166,9 +166,15 @@ def test_numbers_are_sent_as_strings(monkeypatch):
 
 def test_user_remark_carries_our_client_order_id(monkeypatch):
     """A label, not an idempotency key — nothing in Breeze treats it as one,
-    so our own per-account uniqueness stays the only duplicate guard."""
+    so our own per-account uniqueness stays the only duplicate guard.
+
+    Carried with its punctuation removed: Breeze refuses a remark that is not
+    purely alphanumeric, which this test asserted the opposite of until a real
+    order came back "Only alphanumeric characters are allowed in user_remark".
+    See test_breeze_user_remark.py."""
     body = adapter(monkeypatch)._order_body(order(), "client-order-abc")
-    assert body["user_remark"].startswith("client-order-abc"[:20])
+    assert body["user_remark"] == "clientorderabc"
+    assert body["user_remark"].isalnum()
 
 
 # ── the security master ──────────────────────────────────────────────
