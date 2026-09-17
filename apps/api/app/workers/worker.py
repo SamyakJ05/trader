@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.workers import tick_stream
 from app.workers.jobs import (
+    ai_research_tick,
     broker_session_tick,
     import_history_job,
     instrument_sync_tick,
@@ -89,6 +90,15 @@ class WorkerSettings:
         # nothing and would only add load against publishers whose feeds
         # update far more slowly than that.
         cron(news_refresh_tick, minute={0, 15, 30, 45}),
+        # 03:15 UTC is 08:45 IST: after the instrument sync above (08:30) so
+        # the master is current, and half an hour before the open, which
+        # leaves time to read what it proposed before anything could trade.
+        # arq has no timezone parameter -- it fires on the container clock,
+        # which these deployments run in UTC.
+        #
+        # Once a day, not hourly: this spends LLM tokens and broker quota per
+        # run, and a second opinion four hours later is not a second edge.
+        cron(ai_research_tick, hour={3}, minute={15}),
     ]
     on_startup = startup
     on_shutdown = shutdown

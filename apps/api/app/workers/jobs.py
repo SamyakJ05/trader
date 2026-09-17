@@ -15,6 +15,7 @@ from app.engines.paper import market_sim
 from app.engines.paper.settlement import settle_due
 from app.engines.strategy import runner
 from app.services import heartbeat, news, order_reconcile
+from app.services.ai import research
 from app.services.sessions_broker import expire_stale_sessions
 
 logger = get_logger(__name__)
@@ -248,6 +249,24 @@ async def import_history_job(
                 # usually actionable ("no data found for this date range").
                 failed.append({"symbol": symbol, "error": str(exc)[:300]})
     return {"imported": imported, "failed": failed}
+
+
+async def ai_research_tick(ctx: dict) -> None:
+    """The daily AI research pass, before the open.
+
+    Produces proposals a human approves -- or, on an account with
+    auto_execute on, orders through the ordinary auto-execute path, with the
+    same risk engine and daily cap as any other order.
+
+    Never raises, for the same reason news_refresh_tick does not: this is
+    advisory. A provider outage or a rate limit must not mark the worker
+    unhealthy or interrupt the ticks that do move money.
+    """
+    try:
+        async with async_session_factory() as db:
+            await research.research_all_accounts(db, get_redis())
+    except Exception as e:
+        logger.warning("ai_research_tick_failed", error=str(e))
 
 
 async def news_refresh_tick(ctx: dict) -> None:
