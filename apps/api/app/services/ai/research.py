@@ -21,11 +21,20 @@ plainly, because a model asked for a daily trade will find a reason for one,
 and the honest answer on most days is that nothing is worth the charges.
 """
 
+from decimal import Decimal
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.db.models import BrokerAccount, Position, RiskRule, Strategy
+from app.db.models import (
+    BrokerAccount,
+    MarketInstrument,
+    Position,
+    RiskRule,
+    Strategy,
+)
+from app.services import quotes
 from app.services.ai import analyst
 from app.services.ai.llm import resolve_llm
 
@@ -36,6 +45,18 @@ logger = get_logger(__name__)
 # to look like a screen would imply a breadth of data this platform does not
 # have.
 MAX_CANDIDATES = 8
+
+# How many instruments to price before giving up on finding affordable ones.
+# Breeze allows 100 calls a minute and 5,000 a day; this pass runs once, so a
+# few dozen is comfortably inside both and still enough to find candidates.
+# The cap exists because the master holds ~5,900 NSE rows and pricing all of
+# them would spend the day's quota on a screen.
+MAX_PRICED = 40
+
+# A candidate has to be buyable in a size that can be exited in parts. One
+# share of a scrip that eats the whole per-order limit is an all-or-nothing
+# position: it cannot be scaled out of, and a stop becomes a full exit.
+MIN_AFFORDABLE_SHARES = 5
 
 
 async def candidates(db: AsyncSession, account: BrokerAccount) -> list[str]:
@@ -77,6 +98,65 @@ async def candidates(db: AsyncSession, account: BrokerAccount) -> list[str]:
             symbols.append(symbol)
 
     return symbols[:MAX_CANDIDATES]
+
+
+async def affordable_candidates(
+    db: AsyncSession, redis, account: BrokerAccount, *, budget: Decimal
+) -> list[tuple[str, Decimal]]:
+    """Equities this account can buy several shares of, with their prices.
+
+    The instrument master carries no prices -- it is reference data -- so
+    affordability cannot be read from it and has to be asked of the broker.
+    That is why this is capped and why it runs once a day rather than per
+    request.
+
+    `budget` is the per-order ceiling, not the daily one: what matters is
+    whether a single order can take a position of a useful size. A scrip
+    priced so that one share spends the whole order limit is excluded, because
+    a position that cannot be scaled out of is one where every exit is a full
+    exit.
+
+    Returns (symbol, price) so the caller can size without asking again.
+    """
+    rows = list(
+        (
+            await db.execute(
+                select(MarketInstrument.symbol)
+                .where(
+                    MarketInstrument.broker == account.broker,
+                    MarketInstrument.exchange == "NSE",
+                    MarketInstrument.instrument_type == "EQ",
+                )
+                .order_by(MarketInstrument.symbol)
+                .limit(MAX_PRICED)
+            )
+        ).scalars()
+    )
+
+    found: list[tuple[str, Decimal]] = []
+    for symbol in rows:
+        if len(found) >= MAX_CANDIDATES:
+            break
+        price = await quotes.live_price(
+            db, redis, symbol=symbol, exchange="NSE", account=account
+        )
+        if price is None or price <= 0:
+            continue
+        if price * MIN_AFFORDABLE_SHARES <= budget:
+            found.append((symbol, price))
+    return found
+
+
+def per_order_budget(rules: list[RiskRule]) -> Decimal:
+    """The largest single order the risk engine would allow.
+
+    Read from the rules rather than assumed, so the screen and the limits
+    cannot disagree about what is affordable.
+    """
+    for rule in rules:
+        if rule.rule_type == "MAX_ORDER_NOTIONAL" and rule.enabled:
+            return Decimal(str((rule.params or {}).get("max_notional", 0)))
+    return Decimal(0)
 
 
 def _limits_note(rules: list[RiskRule]) -> str:
@@ -125,14 +205,52 @@ on its own merits — not because a review was scheduled. If you do propose, siz
 it well inside the limits above rather than at them, and say what would make \
 you wrong.
 
-You cannot see the wider market: these candidates are the only symbols this \
-platform has data for. Do not speculate about stocks not on the list, and do \
-not imply the list was screened for you."""
+Position size matters as much as the pick. A cheaper share lets the same rupees \
+buy a position that can be scaled out of; one share of an expensive scrip is an \
+all-or-nothing trade where every exit is a full exit. Prefer a size you could \
+halve.
+
+These candidates are the symbols this platform has data for plus equities \
+priced inside the per-order limit — they are filtered for affordability, NOT \
+ranked for quality, and the wider market is not visible to you. Do not \
+speculate about stocks not on the list, and do not imply it was screened for \
+merit."""
 
 
 async def run_daily_research(db: AsyncSession, redis, account: BrokerAccount) -> dict:
     """One research pass for one account. Returns what it did, for the log."""
+    rules = list(
+        (
+            await db.execute(
+                select(RiskRule).where(
+                    RiskRule.user_id == account.user_id,
+                    RiskRule.environment == account.environment,
+                )
+            )
+        ).scalars()
+    )
+
     symbols = await candidates(db, account)
+
+    # Widen to what this account can actually afford. Strategy symbols are
+    # whatever someone configured, and a scrip priced beyond the per-order
+    # limit cannot be traded at all -- proposing it wastes the pass. Priced
+    # candidates are appended with their prices so the model can size against
+    # a real number rather than guess.
+    budget = per_order_budget(rules)
+    priced: list[tuple[str, Decimal]] = []
+    if budget > 0:
+        try:
+            priced = await affordable_candidates(db, redis, account, budget=budget)
+        except Exception as exc:
+            # A screen is a nicety; the configured symbols still work without
+            # it. Broker quota or a dead session must not cost the whole pass.
+            logger.warning("ai_research_screen_failed", error=str(exc))
+    for symbol, _price in priced:
+        if symbol not in symbols:
+            symbols.append(symbol)
+    symbols = symbols[:MAX_CANDIDATES]
+
     if not symbols:
         # Nothing to reason about. Said rather than silently doing nothing: an
         # account with no strategies has no subscribed symbols and therefore
@@ -145,18 +263,15 @@ async def run_daily_research(db: AsyncSession, redis, account: BrokerAccount) ->
         logger.info("ai_research_no_provider", broker_account_id=str(account.id))
         return {"status": "no_provider", "proposals": []}
 
-    rules = list(
-        (
-            await db.execute(
-                select(RiskRule).where(
-                    RiskRule.user_id == account.user_id,
-                    RiskRule.environment == account.environment,
-                )
-            )
-        ).scalars()
+    price_note = (
+        " Prices seen just now: "
+        + ", ".join(f"{sym} at Rs {px}" for sym, px in priced)
+        if priced
+        else ""
     )
-
-    prompt = PROMPT.format(symbols=", ".join(symbols), limits=_limits_note(rules))
+    prompt = PROMPT.format(
+        symbols=", ".join(symbols) + price_note, limits=_limits_note(rules)
+    )
     result = await analyst.chat(
         db,
         redis,

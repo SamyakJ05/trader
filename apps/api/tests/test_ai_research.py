@@ -125,11 +125,12 @@ def test_the_prompt_does_not_promise_a_daily_trade():
 
 
 def test_the_prompt_admits_the_candidate_list_is_not_a_screen():
-    """The honest constraint: these are the only symbols with data, not the
-    best ones found. Implying otherwise would be a claim about data nobody
-    has."""
-    assert "cannot see the wider market" in research.PROMPT
-    assert "not imply the list was screened" in research.PROMPT
+    """The honest constraint: the list is filtered for what this account can
+    afford, not ranked for merit, and the wider market is invisible. A model
+    that read inclusion as a recommendation would be reasoning about a
+    selection nobody made."""
+    assert "wider market is not visible to you" in research.PROMPT
+    assert "not imply it was screened for merit" in research.PROMPT
 
 
 # ── failure containment ──────────────────────────────────────────────
@@ -183,3 +184,92 @@ async def test_the_worker_job_swallows_everything(monkeypatch):
     monkeypatch.setattr(jobs.research, "research_all_accounts", explode)
     # Must return, not raise: the same worker runs order reconciliation.
     await jobs.ai_research_tick({})
+
+
+# ── affordability ────────────────────────────────────────────────────
+#
+# RELIND was never chosen on merit: it was the symbol used to verify the
+# order path, and it stayed because the candidate list was whatever strategies
+# happened to name. At Rs 1244 a Rs 2500 order buys two shares, which is a
+# position that cannot be scaled out of. These cover the screen that fixes it.
+
+
+def test_per_order_budget_is_read_from_the_rules():
+    """Read, not assumed: the screen and the limits must not disagree about
+    what is affordable."""
+    from decimal import Decimal
+
+    rules = [rule("MAX_ORDER_NOTIONAL", {"max_notional": 2500})]
+    assert research.per_order_budget(rules) == Decimal("2500")
+
+
+def test_a_disabled_order_limit_yields_no_budget():
+    from decimal import Decimal
+
+    rules = [rule("MAX_ORDER_NOTIONAL", {"max_notional": 2500}, enabled=False)]
+    assert research.per_order_budget(rules) == Decimal(0)
+
+
+async def test_the_screen_keeps_only_what_buys_several_shares(monkeypatch):
+    """The point of the screen. At a Rs 2500 order limit, a Rs 1244 share
+    buys two -- all-or-nothing -- while a Rs 200 share buys twelve."""
+    from decimal import Decimal
+
+    prices = {"RELIND": Decimal("1244"), "CHEAPCO": Decimal("200"), "MIDCO": Decimal("480")}
+
+    async def fake_price(db, redis, *, symbol, exchange, account):
+        return prices.get(symbol)
+
+    monkeypatch.setattr(research.quotes, "live_price", fake_price)
+
+    db = FakeDb(list(prices))
+    found = await research.affordable_candidates(
+        db, None, account(), budget=Decimal("2500")
+    )
+    got = [sym for sym, _ in found]
+    assert "CHEAPCO" in got and "MIDCO" in got
+    assert "RELIND" not in got, "Rs 1244 x 5 shares exceeds a Rs 2500 order limit"
+
+
+async def test_a_symbol_with_no_quote_is_skipped_not_guessed(monkeypatch):
+    from decimal import Decimal
+
+    async def no_price(db, redis, *, symbol, exchange, account):
+        return None
+
+    monkeypatch.setattr(research.quotes, "live_price", no_price)
+    found = await research.affordable_candidates(
+        FakeDb(["ANYCO"]), None, account(), budget=Decimal("2500")
+    )
+    assert found == []
+
+
+async def test_the_screen_stops_at_the_call_budget(monkeypatch):
+    """Pricing every one of ~5,900 NSE rows would spend the day's broker
+    quota on a screen."""
+    from decimal import Decimal
+
+    calls = []
+
+    async def counting_price(db, redis, *, symbol, exchange, account):
+        calls.append(symbol)
+        return Decimal("1")  # cheap, so nothing is filtered out
+
+    monkeypatch.setattr(research.quotes, "live_price", counting_price)
+    many = [f"SYM{i}" for i in range(500)]
+    found = await research.affordable_candidates(
+        FakeDb(many), None, account(), budget=Decimal("2500")
+    )
+    assert len(found) == research.MAX_CANDIDATES
+    assert len(calls) <= research.MAX_PRICED
+
+
+def test_the_prompt_says_the_list_is_filtered_not_ranked():
+    """Affordability is not merit. A model told the list was 'screened' would
+    treat inclusion as a recommendation."""
+    assert "filtered for affordability" in research.PROMPT
+    assert "ranked for quality" in research.PROMPT
+
+
+def test_the_prompt_asks_for_a_size_that_can_be_halved():
+    assert "scaled out of" in research.PROMPT
