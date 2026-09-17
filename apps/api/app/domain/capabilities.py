@@ -125,7 +125,7 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
     ),
     Broker.ICICI_BREEZE: BrokerCapabilities(
         broker=Broker.ICICI_BREEZE,
-        adapter_status=AdapterStatus.SCAFFOLD,
+        adapter_status=AdapterStatus.WORKING,
         display_name="ICICI Direct Breeze",
         auth_model="api_key login -> apisession token via redirect; each request "
         "signed with SHA-256 checksum of (timestamp + body + secret)",
@@ -150,12 +150,14 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         # on BSE and MCX are not available on Breeze API". Advertising it
         # offered users a segment every order would have been rejected on.
         exchanges=["NSE", "NFO"],
-        notes="READ PATHS VERIFIED against a real account: profile, funds, "
-        "holdings and positions have been exercised and corrected against "
-        "what ICICI actually returns. NO ORDER HAS EVER BEEN SENT, which is "
-        "why adapter_status is still scaffold — the order payloads match "
-        "ICICI's published examples field for field, but matching "
-        "documentation is not the same as having been accepted. The tick "
+        notes="READ AND ORDER PATHS VERIFIED against a real account. Profile, "
+        "funds, holdings and positions were exercised and corrected against "
+        "what ICICI actually returns. On 2026-09-17 a cash equity order was "
+        "placed and cancelled from the registered static IP during market "
+        "hours — RELIND, 1 share, LIMIT well below market, CNC — which is "
+        "what moved adapter_status from scaffold to working. That covers "
+        "CASH EQUITY ONLY: F&O, and any product other than CNC, remain "
+        "unexercised. The tick "
         "stream is likewise unverified against a live socket; it must be "
         "checked during market hours, since outside them a broken feed and a "
         "quiet market are indistinguishable. Futures and options can be "

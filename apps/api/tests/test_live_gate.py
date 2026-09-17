@@ -41,17 +41,42 @@ def test_gate3_adapter_status_blocks(monkeypatch):
     assert reason is not None and "adapter status" in reason
 
 
+# Which adapters have been exercised against the real broker, and when.
+# An entry here is a claim that an order was actually accepted -- not that the
+# payloads look right, which is what scaffold already means. Adding one is the
+# deliberate, reviewed act this file exists to force.
+#
+#   icici_breeze — 2026-09-17. Verified on the registered static IP during
+#   market hours: RELIND (ISIN INE002A01018), 1 share, LIMIT well below market,
+#   CNC, placed and then cancelled. See the stage 5 checklist in
+#   docs/breeze-verification-playbook.md.
+VERIFIED_LIVE = {Broker.ICICI_BREEZE}
+
+
 @pytest.mark.parametrize(
     "broker",
-    [b for b in CAPABILITY_MATRIX if b != Broker.PAPER],
+    [b for b in CAPABILITY_MATRIX if b != Broker.PAPER and b not in VERIFIED_LIVE],
 )
-def test_no_real_broker_passes_the_gate_today(monkeypatch, broker):
+def test_no_unverified_broker_passes_the_gate(monkeypatch, broker):
     """Regression for the 'live trading is structurally impossible' claim.
     If an adapter is ever flipped to WORKING, this test fails on purpose so
-    the flip is a deliberate, reviewed act."""
+    the flip is a deliberate, reviewed act -- adding it to VERIFIED_LIVE above,
+    with what was verified and when."""
     patch_settings(monkeypatch, enable_live_trading=True)
     assert CAPABILITY_MATRIX[broker].adapter_status != AdapterStatus.WORKING
     assert _live_gate(account(broker=broker.value, live_enabled=True)) is not None
+
+
+@pytest.mark.parametrize("broker", sorted(VERIFIED_LIVE, key=lambda b: b.value))
+def test_a_verified_broker_passes_the_gate(monkeypatch, broker):
+    """The other half: an adapter listed as verified must actually dispatch.
+
+    Without this, VERIFIED_LIVE could be edited to silence the test above
+    while the adapter stayed scaffold -- the exemption would then read as
+    'verified' while nothing had been verified at all."""
+    patch_settings(monkeypatch, enable_live_trading=True)
+    assert CAPABILITY_MATRIX[broker].adapter_status == AdapterStatus.WORKING
+    assert _live_gate(account(broker=broker.value, live_enabled=True)) is None
 
 
 # ── the gate has to be REACHABLE, not just correct ──────────────────────
