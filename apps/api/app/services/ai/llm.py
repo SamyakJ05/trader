@@ -389,13 +389,40 @@ async def get_ai_settings(db: AsyncSession, user_id: uuid_mod.UUID) -> AISetting
     return result.scalar_one_or_none()
 
 
+class AIConfigurationError(Exception):
+    """The user configured a provider and it cannot be used.
+
+    Distinct from "no provider configured", which is what returning None
+    means. A caller that cannot tell them apart would report a broken
+    configuration as an absent one, and send someone to set up what they had
+    already set up.
+    """
+
+
 async def resolve_llm(db: AsyncSession, user_id: uuid_mod.UUID) -> LLMClient | None:
-    """User's configured provider, falling back to environment credentials."""
+    """The user's configured provider, or the environment's if they have none.
+
+    A saved configuration is AUTHORITATIVE. It used to fall through to the
+    environment when it could not produce a client, which meant a user whose
+    stored settings were incomplete silently had their requests sent to a
+    different model on different credentials -- observed as a 403 naming
+    anthropic.claude-opus-5 on an account that had configured zai.glm-5 and
+    never chose Claude at all. Falling back is right for someone who has
+    configured nothing; it is wrong the moment they have, because then it
+    substitutes a choice they did not make for the one they did.
+    """
     row = await get_ai_settings(db, user_id)
     if row is not None:
         client = _client_from_row(row)
-        if client is not None:
-            return client
+        if client is None:
+            raise AIConfigurationError(
+                f"The {row.provider} provider saved in AI Trading settings could not "
+                "be used: its stored credentials are missing or incomplete. Re-enter "
+                "them in AI Trading settings. The environment's own provider is not "
+                "used here, because it would run a different model than the one "
+                "configured."
+            )
+        return client
     settings = get_settings()
     if settings.anthropic_api_key:
         return AnthropicLLM(model=settings.ai_model, api_key=settings.anthropic_api_key)

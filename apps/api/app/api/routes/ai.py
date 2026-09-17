@@ -27,6 +27,7 @@ from app.services.ai.llm import (
     DEFAULT_MODELS,
     OPENROUTER_BASE_URL,
     PROVIDERS,
+    AIConfigurationError,
     LLMError,
     build_credentials_blob,
     get_ai_settings,
@@ -161,7 +162,10 @@ async def write_settings(body: AISettingsBody, user: VerifiedUser, db: DbSession
 
 @router.post("/settings/test")
 async def test_settings(user: VerifiedUser, db: DbSession):
-    llm = await resolve_llm(db, user.id)
+    try:
+        llm = await resolve_llm(db, user.id)
+    except AIConfigurationError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     if llm is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AI is not configured")
     try:
@@ -194,7 +198,10 @@ async def bedrock_models(user: VerifiedUser, db: DbSession):
     with messages that name no fix ("not available for this account", "the
     provided model identifier is invalid").
     """
-    llm = await resolve_llm(db, user.id)
+    try:
+        llm = await resolve_llm(db, user.id)
+    except AIConfigurationError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     if llm is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "AI is not configured")
     if llm.provider != "bedrock":
@@ -311,7 +318,12 @@ def _provider_hint(provider: str, error: str) -> str | None:
 
 
 async def _require_llm(db, user_id):
-    llm = await resolve_llm(db, user_id)
+    try:
+        llm = await resolve_llm(db, user_id)
+    except AIConfigurationError as exc:
+        # The saved configuration is broken, which is a different problem from
+        # having none -- and the only one the person can fix from the UI.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     if llm is None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

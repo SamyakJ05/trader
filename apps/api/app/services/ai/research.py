@@ -36,7 +36,7 @@ from app.db.models import (
 )
 from app.services import bhavcopy, quotes
 from app.services.ai import analyst
-from app.services.ai.llm import resolve_llm
+from app.services.ai.llm import AIConfigurationError, resolve_llm
 
 logger = get_logger(__name__)
 
@@ -272,7 +272,17 @@ async def run_daily_research(db: AsyncSession, redis, account: BrokerAccount) ->
         logger.info("ai_research_no_candidates", broker_account_id=str(account.id))
         return {"status": "no_candidates", "proposals": []}
 
-    llm = await resolve_llm(db, account.user_id)
+    try:
+        llm = await resolve_llm(db, account.user_id)
+    except AIConfigurationError as exc:
+        # Distinct from having no provider: the person configured one and it
+        # cannot be used, which is a thing to fix rather than a thing to set up.
+        logger.warning(
+            "ai_research_bad_provider",
+            broker_account_id=str(account.id),
+            detail=str(exc),
+        )
+        return {"status": "bad_provider", "proposals": []}
     if llm is None:
         logger.info("ai_research_no_provider", broker_account_id=str(account.id))
         return {"status": "no_provider", "proposals": []}
