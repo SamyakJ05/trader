@@ -72,14 +72,28 @@ jobs:
         # A non-paper adapter marked WORKING means someone verified it against
         # a real broker — or did not, and flipped it anyway. Either way it is
         # not something a build should carry silently.
+        #
+        # VERIFIED_LIVE_ADAPTERS is the record of the ones that were, carrying
+        # what was verified and when. An adapter flipped without being added
+        # there still fails this build, which is the whole point; adding it is
+        # a diff someone has to write and review.
         run: |
           python -c "
-          from app.domain.capabilities import CAPABILITY_MATRIX
-          live = [b.value for b, c in CAPABILITY_MATRIX.items()
-                  if c.adapter_status.value == 'working' and b.value != 'paper']
-          if live:
-              raise SystemExit(f'adapters marked working: {live}')
-          print('live gate armed')
+          from app.domain.capabilities import CAPABILITY_MATRIX, VERIFIED_LIVE_ADAPTERS
+          unverified = [b.value for b, c in CAPABILITY_MATRIX.items()
+                        if c.adapter_status.value == 'working'
+                        and b.value != 'paper'
+                        and b not in VERIFIED_LIVE_ADAPTERS]
+          if unverified:
+              raise SystemExit(f'adapters marked working without a verification record: {unverified}')
+          # The converse: a recorded adapter that is NOT working means the
+          # record outlived the thing it describes, and would read as a
+          # verification that no longer applies.
+          stale = [b.value for b in VERIFIED_LIVE_ADAPTERS
+                   if CAPABILITY_MATRIX[b].adapter_status.value != 'working']
+          if stale:
+              raise SystemExit(f'listed as verified but not working: {stale}')
+          print('live gate armed; verified:', sorted(b.value for b in VERIFIED_LIVE_ADAPTERS))
           "
 
   web:

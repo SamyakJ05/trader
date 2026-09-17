@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.services.orders as orders_module
-from app.domain.capabilities import CAPABILITY_MATRIX
+from app.domain.capabilities import CAPABILITY_MATRIX, VERIFIED_LIVE_ADAPTERS
 from app.domain.enums import AdapterStatus, Broker
 from app.services.orders import _live_gate
 
@@ -41,16 +41,11 @@ def test_gate3_adapter_status_blocks(monkeypatch):
     assert reason is not None and "adapter status" in reason
 
 
-# Which adapters have been exercised against the real broker, and when.
-# An entry here is a claim that an order was actually accepted -- not that the
-# payloads look right, which is what scaffold already means. Adding one is the
-# deliberate, reviewed act this file exists to force.
-#
-#   icici_breeze — 2026-09-17. Verified on the registered static IP during
-#   market hours: RELIND (ISIN INE002A01018), 1 share, LIMIT well below market,
-#   CNC, placed and then cancelled. See the stage 5 checklist in
-#   docs/breeze-verification-playbook.md.
-VERIFIED_LIVE = {Broker.ICICI_BREEZE}
+# Imported, not restated: capabilities.VERIFIED_LIVE_ADAPTERS is the one
+# record of which adapters were exercised against the real broker and when,
+# and the CI guard reads the same constant. A second copy here could disagree
+# with the build about what has been verified.
+VERIFIED_LIVE = VERIFIED_LIVE_ADAPTERS
 
 
 @pytest.mark.parametrize(

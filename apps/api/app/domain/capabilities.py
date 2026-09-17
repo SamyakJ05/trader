@@ -36,6 +36,22 @@ class BrokerCapabilities(BaseModel):
     notes: str = ""
 
 
+# Adapters whose order path has been exercised against the real broker, with
+# what was verified and when. An entry is a claim that an order was ACCEPTED,
+# not that the payloads look right -- scaffold already means that.
+#
+# Both tripwires read this: the CI step in .github/workflows/ci.yml, which
+# fails any build marking a non-paper adapter working without an entry here,
+# and test_live_gate, which asserts the same thing plus its converse. One
+# source so the two cannot disagree about what has been verified.
+#
+#   icici_breeze — 2026-09-17, CASH EQUITY ONLY. RELIND (ISIN INE002A01018),
+#   1 share, LIMIT well below market, CNC, from the registered static IP
+#   during market hours. F&O and every product other than CNC are still
+#   unexercised. See docs/breeze-verification-playbook.md stage 5.
+VERIFIED_LIVE_ADAPTERS: frozenset[Broker] = frozenset({Broker.ICICI_BREEZE})
+
+
 CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
     Broker.PAPER: BrokerCapabilities(
         broker=Broker.PAPER,
