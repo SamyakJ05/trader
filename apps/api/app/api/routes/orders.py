@@ -12,6 +12,7 @@ from app.db.models import Order
 from app.domain.enums import Environment
 from app.domain.models import OrderRequest
 from app.services import brokers as broker_service
+from app.services import instruments as instrument_service
 from app.services import orders as order_service
 from app.services.orders import OrderServiceError
 
@@ -108,15 +109,41 @@ async def place_order(
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Broker account not found")
 
-    client_order_id = body.client_order_id or idempotency_key or f"ord-{uuid.uuid4().hex[:16]}"
-    order = await order_service.place_order(
+    # Symbols are stored as each broker names them, and brokers disagree:
+    # Breeze calls RELIANCE RELIND. /strategies has refused an unrecognised
+    # symbol since it was written, but this route did not -- so an NSE ticker
+    # typed here reached the risk engine, found no quote for a symbol its
+    # broker never streams, and failed as "no recent market price", which
+    # describes a stale feed rather than the actual mistake.
+    unknown = await instrument_service.unknown_symbols(
         db,
-        get_redis(),
-        user_id=user.id,
-        account=account,
-        request=body.order,
-        client_order_id=client_order_id,
+        broker=account.broker,
+        symbols=[body.order.symbol],
+        exchange=body.order.exchange.value,
     )
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{account.broker} does not recognise {body.order.symbol}. Symbols are "
+            f"stored as each broker names them — Breeze calls RELIANCE RELIND. Use "
+            f"the broker's own code, or sync the instrument master for this account.",
+        )
+
+    client_order_id = body.client_order_id or idempotency_key or f"ord-{uuid.uuid4().hex[:16]}"
+    try:
+        order = await order_service.place_order(
+            db,
+            get_redis(),
+            user_id=user.id,
+            account=account,
+            request=body.order,
+            client_order_id=client_order_id,
+        )
+    except OrderServiceError as e:
+        # Mapped like every other order route. Uncaught, this surfaced as a
+        # 500 with no body -- the UI rendered an empty red box, and the reason
+        # the order was refused reached only the server log.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     return _order_out(order)
 
 
