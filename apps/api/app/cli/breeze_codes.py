@@ -24,8 +24,13 @@ worse than no answer when the next step is an order.
 Run it read-only first; pass --sync to refresh the master when a ticker is
 missing because the master is stale rather than because the code differs.
 
-    python -m scripts.breeze_codes ASHOKLEY TATAELXSI PIDILITIND
-    python -m scripts.breeze_codes --sync ASHOKLEY TATAELXSI
+    python -m app.cli.breeze_codes ASHOKLEY TATAELXSI PIDILITIND
+    python -m app.cli.breeze_codes --isin INE009A01021
+    python -m app.cli.breeze_codes --sync ASHOKLEY TATAELXSI
+
+Lives under app/ rather than in a scripts/ directory because the API image
+copies only alembic, alembic.ini and app -- a resolver that cannot run on the
+host that places the orders is no use to the person placing them.
 """
 
 import argparse
@@ -244,6 +249,13 @@ async def main() -> int:
     parser.add_argument("tickers", nargs="+", help="NSE tickers, e.g. ASHOKLEY")
     parser.add_argument("--exchange", default="NSE")
     parser.add_argument(
+        "--isin",
+        action="store_true",
+        help="Treat the arguments as ISINs rather than tickers. The exact "
+        "route: an ISIN identifies the same security at every venue, so it "
+        "answers what a name search only guesses at.",
+    )
+    parser.add_argument(
         "--sync",
         action="store_true",
         help="Refresh the Breeze instrument master first (one broker call)",
@@ -266,6 +278,24 @@ async def main() -> int:
             written = await sync_instruments(db, account, exchange=args.exchange)
             await db.commit()
             print(f"Wrote {written} rows.\n")
+
+        if args.isin:
+            for isin in args.tickers:
+                rows = (
+                    await db.execute(
+                        select(MarketInstrument.symbol, MarketInstrument.name).where(
+                            MarketInstrument.broker == BROKER,
+                            MarketInstrument.exchange == args.exchange,
+                            MarketInstrument.isin == isin.strip().upper(),
+                        )
+                    )
+                ).all()
+                if rows:
+                    for code, name in rows:
+                        print(f"{isin:<14} -> {code:<14} {name or ''}   [ISIN, exact]")
+                else:
+                    print(f"{isin:<14} -> NOT FOUND")
+            return 0
 
         unresolved = []
         for ticker in args.tickers:
