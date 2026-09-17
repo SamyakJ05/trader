@@ -55,7 +55,9 @@ async def reference_price(
     if account.environment != Environment.LIVE.value:
         return await market_sim.get_price(redis, symbol)
 
-    price = await live_price(db, redis, symbol=symbol, exchange=exchange)
+    price = await live_price(
+        db, redis, symbol=symbol, exchange=exchange, account=account
+    )
     if price is None:
         raise NoQuoteAvailable(
             f"No recent market price for {symbol} on {exchange}. "
@@ -70,17 +72,71 @@ async def live_price(
     *,
     symbol: str,
     exchange: str = "NSE",
+    account: BrokerAccount | None = None,
 ) -> Decimal | None:
-    """The most recent real tick for a symbol, or None if there isn't a fresh
-    one. Never invents a price."""
+    """The most recent real price for a symbol, or None if there isn't one.
+
+    Three sources, in descending freshness, every one of them the broker's
+    own number -- this never invents a price:
+
+      1. A cached websocket tick, held with a TTL so an expired one cannot be
+         read as current.
+      2. The last completed candle's close, subject to the same staleness
+         limit.
+      3. A REST quote from the broker, when an account is given.
+
+    The third exists because the tick stream only subscribes to symbols a
+    strategy names. A live order for anything else -- the usual case when
+    placing one by hand -- would otherwise be refused for want of a price
+    even with the market open and the session healthy. It costs one API call
+    against the broker's rate budget and is tried last for that reason.
+    """
     cached = await _cached_tick(redis, symbol=symbol, exchange=exchange)
     if cached is not None:
         return cached
     # Fall back to the last completed candle's close. Older than a tick, but
     # real, and the staleness check still applies.
-    return await candle_store.last_close(
+    close = await candle_store.last_close(
         db, symbol=symbol, exchange=exchange, max_age_seconds=MAX_QUOTE_AGE_SECONDS
     )
+    if close is not None:
+        return close
+
+    if account is None:
+        return None
+    quote = await _broker_quote(account, symbol=symbol, exchange=exchange)
+    if quote is not None:
+        # Cached like a tick, so a burst of orders in the same symbol does not
+        # spend one API call each against a tight per-minute budget.
+        await record_live_tick(redis, symbol=symbol, exchange=exchange, price=quote)
+    return quote
+
+
+async def _broker_quote(
+    account: BrokerAccount, *, symbol: str, exchange: str
+) -> Decimal | None:
+    """A REST quote from the account's broker, or None if it cannot supply one.
+
+    Adapters are not required to implement get_quote; one that does not simply
+    has no third source. Failures are swallowed deliberately -- the caller
+    refuses the order for want of a price either way, and a broker being slow
+    should not surface as something other than "no quote".
+    """
+    from app.adapters.registry import get_adapter
+
+    try:
+        adapter = get_adapter(account)
+    except Exception:
+        logger.warning("quote_adapter_unavailable", symbol=symbol, exc_info=True)
+        return None
+    getter = getattr(adapter, "get_quote", None)
+    if getter is None:
+        return None
+    try:
+        return await getter(symbol, exchange)
+    except Exception:
+        logger.warning("quote_lookup_failed", symbol=symbol, exc_info=True)
+        return None
 
 
 def _live_key(symbol: str, exchange: str) -> str:

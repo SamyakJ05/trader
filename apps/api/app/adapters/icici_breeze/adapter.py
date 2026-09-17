@@ -481,6 +481,57 @@ class BreezeAdapter(BrokerAdapter):
             )
         return out
 
+    async def get_quote(self, symbol: str, exchange: str = "NSE") -> Decimal | None:
+        """Last traded price for one stock code, or None if Breeze has none.
+
+        The websocket is the primary price source and this is the fallback
+        for when it has no tick: the stream only subscribes to what a
+        strategy names, so a symbol nobody is trading has no cached price
+        even during market hours, and a live order for it cannot be
+        risk-checked at all. A REST quote is the same broker's own number,
+        fetched on demand.
+
+        Returns None rather than raising when the quote is missing or
+        unparseable. The caller's job is to refuse the order for want of a
+        price, and it already does that; turning a missing quote into an
+        exception here would make a quiet "no price" indistinguishable from
+        a broken session.
+
+        `product_type` is deliberately absent: it is required for a
+        derivatives quote and rejected for a cash one, and this asks only
+        about equities.
+        """
+        try:
+            data = await self._request(
+                "GET",
+                "/quotes",
+                {"stock_code": symbol, "exchange_code": exchange},
+            )
+        except (BrokerError, SessionExpiredError) as exc:
+            logger.warning(
+                "breeze_quote_failed", symbol=symbol, exchange=exchange, error=str(exc)
+            )
+            return None
+
+        # Breeze returns a list even for one instrument.
+        rows = data if isinstance(data, list) else [data]
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        row = rows[0]
+        # ltp is the traded price; the others are the documented fallbacks
+        # when a scrip has not traded yet today, in descending usefulness.
+        for field in ("ltp", "last_traded_price", "close", "previous_close"):
+            raw = row.get(field)
+            if raw in (None, "", 0, "0"):
+                continue
+            try:
+                price = Decimal(str(raw))
+            except (ArithmeticError, ValueError):
+                continue
+            if price.is_finite() and price > 0:
+                return price
+        return None
+
     async def get_orders(self) -> list[BrokerOrder]:
         # The trading day is an IST day. Deriving it from UTC put the window
         # on the previous calendar date for everything before 05:30 IST, so a
