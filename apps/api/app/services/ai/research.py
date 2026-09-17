@@ -34,7 +34,7 @@ from app.db.models import (
     RiskRule,
     Strategy,
 )
-from app.services import quotes
+from app.services import bhavcopy, quotes
 from app.services.ai import analyst
 from app.services.ai.llm import resolve_llm
 
@@ -241,7 +241,21 @@ async def run_daily_research(db: AsyncSession, redis, account: BrokerAccount) ->
     priced: list[tuple[str, Decimal]] = []
     if budget > 0:
         try:
-            priced = await affordable_candidates(db, redis, account, budget=budget)
+            # The stored bhavcopy first: one query over every NSE equity,
+            # ranked by traded value, against 40 broker calls that could only
+            # filter. Falls back to pricing through the broker when no
+            # bhavcopy has been imported yet -- a fresh deployment has none
+            # until the nightly job has run once.
+            screened = await bhavcopy.screen(
+                db,
+                broker=account.broker,
+                max_price=budget,
+                min_shares=MIN_AFFORDABLE_SHARES,
+                limit=MAX_CANDIDATES,
+            )
+            priced = [(row["symbol"], row["close"]) for row in screened]
+            if not priced:
+                priced = await affordable_candidates(db, redis, account, budget=budget)
         except Exception as exc:
             # A screen is a nicety; the configured symbols still work without
             # it. Broker quota or a dead session must not cost the whole pass.

@@ -11,6 +11,7 @@ from app.core.logging import configure_logging
 from app.workers import tick_stream
 from app.workers.jobs import (
     ai_research_tick,
+    bhavcopy_tick,
     broker_session_tick,
     import_history_job,
     instrument_sync_tick,
@@ -98,6 +99,10 @@ class WorkerSettings:
         #
         # Once a day, not hourly: this spends LLM tokens and broker quota per
         # run, and a second opinion four hours later is not a second edge.
+        # 02:30 UTC is 08:00 IST: the previous session's bhavcopy has long
+        # been published, and this lands before the instrument sync (08:30)
+        # and the research pass (08:45) that both read what it writes.
+        cron(bhavcopy_tick, hour={2}, minute={30}, run_at_startup=True),
         cron(ai_research_tick, hour={3}, minute={15}),
     ]
     on_startup = startup

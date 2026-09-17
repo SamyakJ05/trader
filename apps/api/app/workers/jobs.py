@@ -14,7 +14,7 @@ from app.engines.paper import engine as paper_engine
 from app.engines.paper import market_sim
 from app.engines.paper.settlement import settle_due
 from app.engines.strategy import runner
-from app.services import heartbeat, news, order_reconcile
+from app.services import bhavcopy, heartbeat, news, order_reconcile
 from app.services.ai import research
 from app.services.sessions_broker import expire_stale_sessions
 
@@ -249,6 +249,28 @@ async def import_history_job(
                 # usually actionable ("no data found for this date range").
                 failed.append({"symbol": symbol, "error": str(exc)[:300]})
     return {"imported": imported, "failed": failed}
+
+
+async def bhavcopy_tick(ctx: dict) -> None:
+    """Import the previous session's closes for every NSE equity.
+
+    This is the screening universe. Without it, "which stocks can this
+    account afford" can only be answered by pricing symbols one at a time
+    through the broker, which spends quota and cannot rank what it finds.
+
+    Never raises. It is not on the order path -- every order still prices off
+    a live broker quote -- so a failed download must not mark the worker
+    unhealthy or interrupt the ticks that move money. A missing file is
+    normal: holidays have none, and the day's file is not published until
+    after the close.
+    """
+    try:
+        async with async_session_factory() as db:
+            await bhavcopy.import_day(db)
+    except bhavcopy.BhavcopyUnavailable as e:
+        logger.info("bhavcopy_unavailable", detail=str(e))
+    except Exception as e:
+        logger.warning("bhavcopy_import_failed", error=str(e))
 
 
 async def ai_research_tick(ctx: dict) -> None:
