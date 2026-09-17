@@ -46,9 +46,12 @@ class BrokerCapabilities(BaseModel):
 # source so the two cannot disagree about what has been verified.
 #
 #   icici_breeze — 2026-09-17, CASH EQUITY ONLY. RELIND (ISIN INE002A01018),
-#   1 share, LIMIT well below market, CNC, from the registered static IP
-#   during market hours. F&O and every product other than CNC are still
-#   unexercised. See docs/breeze-verification-playbook.md stage 5.
+#   1 share, LIMIT 1170 against a market of ~1244, CNC, from the registered
+#   static IP during market hours. Accepted as broker order
+#   20260917K400002141, visible in the ICICI console, status OPEN, with the
+#   full audit chain recorded and no duplicate. F&O and every product other
+#   than CNC are still unexercised, as is the tick stream, which has never
+#   subscribed to anything. See docs/breeze-verification-playbook.md stage 5.
 VERIFIED_LIVE_ADAPTERS: frozenset[Broker] = frozenset({Broker.ICICI_BREEZE})
 
 
@@ -169,11 +172,14 @@ CAPABILITY_MATRIX: dict[Broker, BrokerCapabilities] = {
         notes="READ AND ORDER PATHS VERIFIED against a real account. Profile, "
         "funds, holdings and positions were exercised and corrected against "
         "what ICICI actually returns. On 2026-09-17 a cash equity order was "
-        "placed and cancelled from the registered static IP during market "
-        "hours — RELIND, 1 share, LIMIT well below market, CNC — which is "
+        "accepted from the registered static IP during market hours — RELIND, "
+        "1 share, LIMIT 1170, CNC, broker order 20260917K400002141 — which is "
         "what moved adapter_status from scaffold to working. That covers "
         "CASH EQUITY ONLY: F&O, and any product other than CNC, remain "
-        "unexercised. The tick "
+        "unexercised. Two of Breeze's own rules were found by that order and "
+        "are handled in the adapter: user_remark takes alphanumerics only, "
+        "and a limit price outside the exchange's daily band (10% for most "
+        "scrips) is refused outright. The tick "
         "stream is likewise unverified against a live socket; it must be "
         "checked during market hours, since outside them a broken feed and a "
         "quiet market are indistinguishable. Futures and options can be "

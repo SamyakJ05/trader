@@ -282,7 +282,12 @@ test in the same commit, saying what you verified and when.
 
 - 1 share of a liquid stock, by its **Breeze code**
 - **LIMIT** — there is no other choice here, and that is deliberate
-- price ~20% below market for a buy, so it rests in the book instead of filling
+- price a few percent below market for a buy — far enough to rest in the
+  book rather than fill, close enough to stay inside the exchange's daily
+  price band. **Not 20%**: NSE bands most scrips at 10% (tighter for some),
+  and a price outside the band is rejected outright — "Price entered by you
+  is beyond the price range permitted by exchange". 5-7% below is the range
+  that works; RELIND at 1244 was accepted at 1170 and refused at 995.
 - product **CNC** (`cash`)
 
 ### 5.3 Check five things
